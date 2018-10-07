@@ -1,15 +1,14 @@
 llvm-cxxapi
 ========
 
-Resurrected LLVM "Cpp Backend", rebuild as a LLVM tool, with better compatibility and readability.
-
+Resurrected LLVM "Cpp Backend", rebuild as a LLVM tool, re implemented IR generation using IRBuilder, re implemented generation Type using TypeBuilder.
 
 INSTALLATION INSTRUCTIONS
 =========================
 
 The `llvm-cxxapi` tool works with LLVM 3.7 ~ 6.0. You will have to compile these version of LLVM before you try to use `llvm-cxxapi`. This guide will walk you through the compilation and installation of both tools and show usage statements to verify that the `llvm-cxxapi` tool is compiled correctly.
 
-The library is known to compile on various Linux versions (Redhat, Ubuntu), Mac OS X, and Windows (MSVC、Mingw-w64).
+It is known to compile on various Linux versions (Redhat, Ubuntu, etc), Mac OS X, and Windows (MSVC, Mingw-w64).
 
 Step 1: Clone LLVM and llvm-cxxapi
 =======================
@@ -21,7 +20,7 @@ If you have never work with LLVM, the first step is to download LLVM on your mac
     cd $HOME
     git clone https://github.com/llvm-mirror/llvm
     cd llvm
-    git checkout release_50
+    git checkout release_60
 
 Download `llvm-cxxapi`
 
@@ -63,7 +62,7 @@ $ alias cxxapi=$HOME/llvm/bin/llvm-cxxapi
 $ echo "int test(int a) { return (((a ^ 4) * 3) ^ 2) + 1;}" | clang -x c - -emit-llvm -S -O3 -o - | cxxapi -o test.ll.cpp
 ```
 
-Now you get C++ program to generate the IR of function "test", such as
+Now you get a C++ program to generate the IR of function "test", such as
 
 ```c++
 IRBuilder<> IRB(Ctx);
