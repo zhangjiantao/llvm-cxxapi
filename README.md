@@ -63,7 +63,7 @@ $ alias cxxapi=$HOME/llvm/bin/llvm-cxxapi
 $ echo "int test(int a) { return (((a ^ 4) * 3) ^ 2) + 1;}" | clang -x c - -emit-llvm -S -O3 -o - | cxxapi -o test.ll.cpp
 ```
 
-Now you get C++ program to generate the IR of function f, such as
+Now you get C++ program to generate the IR of function "test", such as
 
 ```c++
 IRBuilder<> IRB(Ctx);
