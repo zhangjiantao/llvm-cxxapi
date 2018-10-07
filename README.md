@@ -7,12 +7,9 @@ Resurrected LLVM "Cpp Backend", rebuild as a LLVM tool, with better compatibilit
 INSTALLATION INSTRUCTIONS
 =========================
 
-The `llvm-cxxapi` tool works with LLVM 3.7 ~ 6.0. You will have to
-compile this version of LLVM before you try to use LLVM-CBE. This
-guide will walk you through the compilation and installation of both tools and show usage statements to verify that the `llvm-cxxapi` tool is compiled correctly.
+The `llvm-cxxapi` tool works with LLVM 3.7 ~ 6.0. You will have to compile these version of LLVM before you try to use `llvm-cxxapi`. This guide will walk you through the compilation and installation of both tools and show usage statements to verify that the `llvm-cxxapi` tool is compiled correctly.
 
-The library is known to compile on various Linux versions (Redhat,
-Mageia, Ubuntu, Debian), Mac OS X, and Windows (Mingw-w64).
+The library is known to compile on various Linux versions (Redhat, Ubuntu), Mac OS X, and Windows (MSVC、Mingw-w64).
 
 Step 1: Clone LLVM and llvm-cxxapi
 =======================
@@ -68,35 +65,35 @@ $ echo "int test(int a) { return (((a ^ 4) * 3) ^ 2) + 1;}" | clang -x c - -emit
 
 Now you get C++ program to generate the IR of function f, such as
 
-```
-  IRBuilder<> IRB(Ctx);
+```c++
+IRBuilder<> IRB(Ctx);
 
-  auto FuncTy = TypeBuilder<int32_t(int32_t), false>::get(Ctx);
-  auto FuncTest = Function::Create(FuncTy, GlobalValue::ExternalLinkage, "test", M);
+auto FuncTy = TypeBuilder<int32_t(int32_t), false>::get(Ctx);
+auto FuncTest = Function::Create(FuncTy, GlobalValue::ExternalLinkage, "test", M);
 
-  // Function: test
-  if (1) {
-    FuncTest->setCallingConv(CallingConv::C);
-    FuncTest->setUnnamedAddr(GlobalValue::UnnamedAddr::Local);
-    FuncTest->addFnAttr(Attribute::NoRecurse);
-    FuncTest->addFnAttr(Attribute::NoUnwind);
-    FuncTest->addFnAttr(Attribute::ReadNone);
+// Function: test
+if (1) {
+  FuncTest->setCallingConv(CallingConv::C);
+  FuncTest->setUnnamedAddr(GlobalValue::UnnamedAddr::Local);
+  FuncTest->addFnAttr(Attribute::NoRecurse);
+  FuncTest->addFnAttr(Attribute::NoUnwind);
+  FuncTest->addFnAttr(Attribute::ReadNone);
     
-    SmallVector<Argument *, 1> Args;
-    for (auto &Arg : FuncTest->args())
-      Args.push_back(&Arg);
+  SmallVector<Argument *, 1> Args;
+  for (auto &Arg : FuncTest->args())
+    Args.push_back(&Arg);
     
-    // BasicBlocks
-    auto Block = BasicBlock::Create(Ctx, "", FuncTest);
-    
-    // BasicBlock  (Block)
-    IRB.SetInsertPoint(Block);
-    auto XorInt32t = IRB.CreateXor(Args[0], IRB.getInt32(4));
-    auto MulInt32t = IRB.CreateMul(XorInt32t, IRB.getInt32(3), "", false, true);
-    auto XorInt32t1 = IRB.CreateXor(MulInt32t, IRB.getInt32(2));
-    auto AddInt32t = IRB.CreateAdd(XorInt32t1, IRB.getInt32(1), "", false, true);
-    IRB.CreateRet(AddInt32t);
-  }
+  // BasicBlocks
+  auto Block = BasicBlock::Create(Ctx, "", FuncTest);
+  
+  // BasicBlock  (Block)
+  IRB.SetInsertPoint(Block);
+  auto XorInt32t = IRB.CreateXor(Args[0], IRB.getInt32(4));
+  auto MulInt32t = IRB.CreateMul(XorInt32t, IRB.getInt32(3), "", false, true);
+  auto XorInt32t1 = IRB.CreateXor(MulInt32t, IRB.getInt32(2));
+  auto AddInt32t = IRB.CreateAdd(XorInt32t1, IRB.getInt32(1), "", false, true);
+  IRB.CreateRet(AddInt32t);
+}
 ```
 
 Compile Generated C++ Code and Run
