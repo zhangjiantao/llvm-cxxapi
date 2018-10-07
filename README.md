@@ -73,12 +73,6 @@ auto FuncTest = Function::Create(FuncTy, GlobalValue::ExternalLinkage, "test", M
 
 // Function: test
 if (1) {
-  FuncTest->setCallingConv(CallingConv::C);
-  FuncTest->setUnnamedAddr(GlobalValue::UnnamedAddr::Local);
-  FuncTest->addFnAttr(Attribute::NoRecurse);
-  FuncTest->addFnAttr(Attribute::NoUnwind);
-  FuncTest->addFnAttr(Attribute::ReadNone);
-    
   SmallVector<Argument *, 1> Args;
   for (auto &Arg : FuncTest->args())
     Args.push_back(&Arg);
