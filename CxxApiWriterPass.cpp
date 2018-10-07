@@ -59,6 +59,10 @@
   (LLVM_VERSION_MAJOR < _MAJOR ||                                              \
    (LLVM_VERSION_MAJOR == _MAJOR && (LLVM_VERSION_MINOR < _MINOR)))
 
+#if LLVM_VERSION_BEFORE(3, 7)
+#error The current LLVM version is not supported.
+#endif
+
 using namespace llvm;
 
 // Normalize a llvm value name to cxx variable name
