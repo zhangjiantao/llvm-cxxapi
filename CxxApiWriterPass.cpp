@@ -60,7 +60,7 @@
    (LLVM_VERSION_MAJOR == _MAJOR && (LLVM_VERSION_MINOR < _MINOR)))
 
 #if LLVM_VERSION_BEFORE(3, 7)
-#error The current LLVM version is no longer supported.
+#error LLVM earlier than 3.7 is no longer supported.
 #endif
 
 using namespace llvm;
@@ -213,6 +213,7 @@ private:
   }
   inline raw_ostream &cl() { return Out; }
 
+  inline StringRef btostr(bool B) { return B ? "true" : "false"; }
   inline std::string lastNameArg(const Instruction *I) {
     return I->hasName() ? std::string(", ") + Literal(I->getName().str()) + ");"
                         : ");";
@@ -231,6 +232,7 @@ private:
   std::string getArgOperands(const iterator_range<User::const_op_iterator> &);
   std::string getTypeList(const std::vector<Type *> &, bool = false);
   std::string getConstList(const ConstantDataSequential *, bool = false);
+  std::string getConstIntList(const ConstantDataSequential *);
   std::string getConstList(const ConstantAggregate *, bool = false);
   std::string getConstList(const GEPOperator *, bool = false);
 
@@ -468,14 +470,20 @@ static std::string Normalize(const std::string &Str) {
 
 static std::string Literal(const std::string &Str) {
   std::string Result;
+  raw_string_ostream OS(Result);
+  const std::map<unsigned char, std::string> Escapes = {
+      {'\t', "\\t"}, {'\n', "\\n"},  {'\v', "\\v"}, {'\f', "\\f"},
+      {'\r', "\\r"}, {'\\', "\\\\"}, {'\"', "\\"}};
   bool isValidLiteral = true;
   for (size_t i = 0, e = Str.size(); i != e; ++i) {
     auto C = (unsigned char)Str[i];
-    if (!isprint(C) || C == '\\' || C == '"' || C == '\x09' || C == '\x0a')
+    // Unprintable and cannot be escaped
+    if (!isprint(C) && Escapes.find(C) == Escapes.end()) {
       isValidLiteral = false;
+      break;
+    }
   }
   if (!isValidLiteral) {
-    raw_string_ostream OS(Result);
     for (size_t i = 0, e = Str.size(); i != e; ++i) {
       auto C = (unsigned char)Str[i];
       OS << "\\x" << hexdigit(C >> 4)
@@ -483,8 +491,18 @@ static std::string Literal(const std::string &Str) {
     }
     OS.flush();
     return "\"" + Result + "\"";
+  } else {
+    for (size_t i = 0, e = Str.size(); i != e; ++i) {
+      auto C = (unsigned char)Str[i];
+      if (Escapes.find(C) != Escapes.end()) {
+        OS << Escapes.at(C);
+      } else {
+        OS << C;
+      }
+    }
+    OS.flush();
+    return "\"" + Result + "\"";
   }
-  return "\"" + Str + "\"";
 }
 
 // printConstantFP - Print a floating point constant .. very carefully :)
@@ -717,6 +735,19 @@ std::string CxxApiWriterPass::getConstList(const ConstantDataSequential *CDS,
   return Prefix + Names + Suffix;
 }
 
+std::string
+CxxApiWriterPass::getConstIntList(const ConstantDataSequential *CDS) {
+  std::string Names;
+  for (unsigned i = 0; i < CDS->getNumElements(); i++) {
+    printConstant(CDS->getElementAsConstant(i));
+    Names += utostr(CDS->getElementAsInteger(i)) + ", ";
+  }
+  if (StringRef(Names).endswith(", "))
+    Names = StringRef(Names).drop_back(2).str();
+  auto BWS = utostr(CDS->getElementType()->getIntegerBitWidth());
+  return "ArrayRef<uint" + BWS + "_t>({" + Names + "})";
+}
+
 std::string CxxApiWriterPass::getTypeList(const std::vector<Type *> &TyList,
                                           bool NeedCast) {
   std::string Names;
@@ -928,7 +959,7 @@ void CxxApiWriterPass::printFunctionType(FunctionType *FT) {
     auto Pars = getTypeList(FT->params().vec());
     nl() << "auto " << TypeName << " = FunctionType::get("
          << DefNames.get(FT->getReturnType()) << ", " << Pars << ", "
-         << toStringRef(FT->isVarArg()) << ");";
+         << btostr(FT->isVarArg()) << ");";
   }
 }
 
@@ -962,7 +993,7 @@ void CxxApiWriterPass::printStructTypeHead(StructType *ST) {
   if (ST->isLiteral()) {
     auto Pars = getTypeList(ST->elements().vec());
     nl() << "auto " << TypeName << " = StructType::get(Ctx, " << Pars << ", "
-         << toStringRef(ST->isPacked()) << "); // isLiteral";
+         << btostr(ST->isPacked()) << "); // isLiteral";
   } else {
     nl() << "auto " << TypeName << " = StructType::create(Ctx, "
          << Literal(ST->getName()) << ");";
@@ -978,8 +1009,8 @@ void CxxApiWriterPass::printStructTypeBody(StructType *ST) {
 
   auto TypeName = DefNames.get(ST);
   auto Pars = getTypeList(ST->elements().vec(), true);
-  nl() << TypeName << "->setBody(" << Pars << ", "
-       << toStringRef(ST->isPacked()) << ");";
+  nl() << TypeName << "->setBody(" << Pars << ", " << btostr(ST->isPacked())
+       << ");";
 }
 
 void CxxApiWriterPass::printType(Type *Ty) {
@@ -1123,8 +1154,19 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
   }
 
   //
+  // ConstantInt (BitWidth > 64)
+  if (auto CI = dyn_cast<ConstantInt>(C)) {
+    auto BwStr = utostr(CI->getBitWidth());
+    std::string ValStr;
+    raw_string_ostream OS(ValStr);
+    OS << CI->getValue();
+    OS.flush();
+    nl() << "auto " << ValName << " = ConstantInt::get(IRB.getIntNTy(" << BwStr
+         << "), APInt(" << BwStr << ", \"" << ValStr << "\", 10));";
+  }
+  //
   // ConstantAggregateZero
-  if (isa<ConstantAggregateZero>(C)) {
+  else if (isa<ConstantAggregateZero>(C)) {
     nl() << "auto " << ValName << " = ConstantAggregateZero::get(" << TypeName
          << ");";
   }
@@ -1138,13 +1180,21 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
   //
   // ConstantDataSequential
   else if (auto CDS = dyn_cast<ConstantDataSequential>(C)) {
-    if (CDS->isString() && !CDS->getAsString().count('\0')) {
+    if (CDS->isString() && !CDS->getAsString().drop_back().count('\0')) {
       nl() << "auto " << ValName << " = ConstantDataArray::getString(Ctx, ";
       auto Str = CDS->getAsString();
       auto NulTerm = (Str.back() == 0);
       if (NulTerm)
         Str = Str.drop_back();
-      cl() << Literal(Str) << ", " << toStringRef(NulTerm) << ");";
+      cl() << Literal(Str) << ", " << btostr(NulTerm) << ");";
+    } else if (CDS->getElementType()->isIntegerTy() &&
+               (CDS->getElementType()->getIntegerBitWidth() == 8 ||
+                CDS->getElementType()->getIntegerBitWidth() == 16 ||
+                CDS->getElementType()->getIntegerBitWidth() == 32 ||
+                CDS->getElementType()->getIntegerBitWidth() == 64)) {
+      auto Elts = getConstIntList(CDS);
+      nl() << "auto " << ValName << " = ConstantDataArray::get(Ctx, " << Elts
+           << ");";
     } else {
       auto Elts = getConstList(CDS);
       auto Decl = isa<ArrayType>(CDS->getType()) ? " = ConstantArray::get("
@@ -1263,12 +1313,14 @@ void CxxApiWriterPass::initCommonConst(const Constant *C, ConstSet &Cs) {
     auto BitWidth = CI->getBitWidth();
     auto BWS = utostr(BitWidth);
     switch (BitWidth) {
-    default:
+    default: {
+      if (BitWidth > 64)
+        return;
       DefNames.set(C, "IRB.getIntN(" + BWS + ", " + Val + ")");
       return;
+    }
     case 1:
-      DefNames.set(C, "IRB.getInt1(" + toStringRef(!CI->isNullValue()).str() +
-                          ")");
+      DefNames.set(C, "IRB.getInt1(" + btostr(!CI->isNullValue()).str() + ")");
       return;
     case 8:
     case 16:
@@ -1335,7 +1387,7 @@ void CxxApiWriterPass::printVariableHead(const GlobalVariable *GV) {
     nl() << "// has initializer, specified below";
   }
   nl() << "auto " << Name << " = new GlobalVariable(*M, " << EleTyName << ", "
-       << toStringRef(GV->isConstant()) << ", " << getLinkageType(GV)
+       << btostr(GV->isConstant()) << ", " << getLinkageType(GV)
        << ", nullptr);";
   if (GV->hasName()) {
     nl() << Name << "->setName(" << Literal(GV->getName()) << ");";
@@ -1437,8 +1489,8 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
       auto Nuw = BO->hasNoUnsignedWrap();
       auto Nsw = BO->hasNoSignedWrap();
       if (Nuw || Nsw) {
-        cl() << ", " << Literal(I->getName()) << ", " << toStringRef(Nuw)
-             << ", " << toStringRef(Nsw) << ");";
+        cl() << ", " << Literal(I->getName()) << ", " << btostr(Nuw) << ", "
+             << btostr(Nsw) << ");";
         return;
       }
     }
@@ -1630,7 +1682,7 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
            << DefNames.get(ILA->getFunctionType()) << ", "
            << Literal(ILA->getAsmString()) << ", "
            << Literal(ILA->getConstraintString()) << ", "
-           << toStringRef(ILA->hasSideEffects()) << ");";
+           << btostr(ILA->hasSideEffects()) << ");";
     }
     if (Call->getCallingConv() || Call->isTailCall() ||
         Call->hasNUsesOrMore(1) /*|| !Call->getType()->isVoidTy()*/) {
@@ -1990,7 +2042,7 @@ void CxxApiWriterPass::printModuleBody() {
     for (auto &F : TheModule->functions()) {
       if (!F.isDeclaration() || hasAnyArgAttribute(&F)) {
         nl() << "// Function: " << F.getName();
-        nl() << "if (1) {";
+        nl() << "if (" << DefNames.get(&F) << ") {";
         indent();
         printFunctionBody(&F);
         outdent();
@@ -2017,9 +2069,8 @@ bool CxxApiWriterPass::runOnModule(Module &M) {
   nl();
   nl() << "#if (LLVM_VERSION_MAJOR != " << LLVM_VERSION_MAJOR
        << " || (LLVM_VERSION_MINOR != " << LLVM_VERSION_MINOR << "))";
-  nl() << "#pragma message(\"\\nwarning : This file is generated by llvm-cxxapi"
-       << " (based on LLVM " << LLVM_VERSION_STRING
-       << "), may not compatible with current LLVM version!\\n\")";
+  nl() << "#pragma message(\"\\nwarning : may not compatible with this LLVM "
+          "version.\\n\")";
   nl() << "#endif";
   nl();
   nl() << "using namespace llvm;";
