@@ -60,7 +60,7 @@
    (LLVM_VERSION_MAJOR == _MAJOR && (LLVM_VERSION_MINOR < _MINOR)))
 
 #if LLVM_VERSION_BEFORE(3, 7)
-#error The current LLVM version is not supported.
+#error The current LLVM version is no longer supported.
 #endif
 
 using namespace llvm;
@@ -181,7 +181,8 @@ public:
 struct CxxApiWriterPass : public ModulePass {
   static char ID;
   explicit CxxApiWriterPass(raw_ostream &OS, bool IR)
-      : ModulePass(ID), Out(OS), isPrintIR(IR), IndentLevel(0) {}
+      : ModulePass(ID), Out(OS), isPrintIR(IR), IndentLevel(0),
+        TheModule(nullptr) {}
 
   bool runOnModule(Module &M) override;
 
@@ -328,22 +329,19 @@ static StringRef getAtomicOrdering(AtomicOrdering Ordering) {
     return "AtomicOrdering::AcquireRelease";
   case AtomicOrdering::SequentiallyConsistent:
     return "AtomicOrdering::SequentiallyConsistent";
-  default:
-    report_fatal_error("unknown ordering!");
   }
 }
 
 template <typename T>
 #if LLVM_VERSION_BEFORE(5, 0)
-static StringRef getAtomicSynchScope(cosnt T *Obj) {
+static StringRef getAtomicSynchScope(const T *Obj) {
   switch (Obj->getSynchScope()) {
   case SingleThread:
     return "SingleThread";
   case CrossThread:
     return "CrossThread";
-  default:
-    report_fatal_error("unknown synch scope!");
   }
+  return "<unknow>";
 }
 #else
 static StringRef getAtomicSynchScope(const T *Obj) {
@@ -352,8 +350,6 @@ static StringRef getAtomicSynchScope(const T *Obj) {
     return "SyncScope::SingleThread";
   case SyncScope::System:
     return "SyncScope::System";
-  default:
-    report_fatal_error("unknown synch scope!");
   }
 }
 #endif
@@ -402,9 +398,8 @@ static StringRef getLinkageType(const GlobalValue *G) {
     return "GlobalValue::ExternalWeakLinkage";
   case GlobalValue::CommonLinkage:
     return "GlobalValue::CommonLinkage";
-  default:
-    report_fatal_error("unknow linkage!");
   }
+  return "<unknow>";
 }
 
 static StringRef getVisibilityType(const GlobalValue *G) {
@@ -415,9 +410,8 @@ static StringRef getVisibilityType(const GlobalValue *G) {
     return "GlobalValue::HiddenVisibility";
   case GlobalValue::ProtectedVisibility:
     return "GlobalValue::ProtectedVisibility";
-  default:
-    report_fatal_error("unknow visibility!");
   }
+  return "<unknow>";
 }
 
 static StringRef getDLLStorageClassType(const GlobalValue *G) {
@@ -428,9 +422,8 @@ static StringRef getDLLStorageClassType(const GlobalValue *G) {
     return "GlobalValue::DLLImportStorageClass";
   case GlobalValue::DLLExportStorageClass:
     return "GlobalValue::DLLExportStorageClass";
-  default:
-    report_fatal_error("unknow DLLStorageClass!");
   }
+  return "<unknow>";
 }
 
 static StringRef getThreadLocalMode(const GlobalValue *G) {
@@ -445,15 +438,14 @@ static StringRef getThreadLocalMode(const GlobalValue *G) {
     return "GlobalVariable::InitialExecTLSModel";
   case GlobalVariable::LocalExecTLSModel:
     return "GlobalVariable::LocalExecTLSModel";
-  default:
-    report_fatal_error("unknow ThreadLocalMode!");
   }
+  return "<unknow>";
 }
 
 static std::string Normalize(const std::string &Str) {
   auto Str1 = Str;
-  for (unsigned i = 0, e = Str.size(); i != e; ++i) {
-    unsigned char C = (unsigned char)Str[i];
+  for (size_t i = 0, e = Str.size(); i != e; ++i) {
+    auto C = (unsigned char)Str[i];
     if (!((C >= '0' && C <= '9') || (C >= 'a' && C <= 'z') ||
           (C >= 'A' && C <= 'Z')))
       Str1[i] = '.';
@@ -477,15 +469,15 @@ static std::string Normalize(const std::string &Str) {
 static std::string Literal(const std::string &Str) {
   std::string Result;
   bool isValidLiteral = true;
-  for (unsigned i = 0, e = Str.size(); i != e; ++i) {
-    unsigned char C = (unsigned char)Str[i];
+  for (size_t i = 0, e = Str.size(); i != e; ++i) {
+    auto C = (unsigned char)Str[i];
     if (!isprint(C) || C == '\\' || C == '"' || C == '\x09' || C == '\x0a')
       isValidLiteral = false;
   }
   if (!isValidLiteral) {
     raw_string_ostream OS(Result);
-    for (unsigned i = 0, e = Str.size(); i != e; ++i) {
-      unsigned char C = (unsigned char)Str[i];
+    for (size_t i = 0, e = Str.size(); i != e; ++i) {
+      auto C = (unsigned char)Str[i];
       OS << "\\x" << hexdigit(C >> 4)
          << hexdigit(static_cast<unsigned int>(C & 0x0F));
     }
@@ -589,12 +581,12 @@ void CxxApiWriterPass::initCommonPtrType(PointerType *PT, TypeSet &Ts) {
   default:
     initCommonType(ET, Ts);
     if (DefNames.has(ET)) {
+      auto EN = DefNames.get(ET);
       auto AS = PT->getAddressSpace();
       if (AS) {
-        DefNames.set(PT, "PointerType::get(" + DefNames.get(ET) + ", " +
-                             utostr(AS) + ")");
+        DefNames.set(PT, "PointerType::get(" + EN + ", " + utostr(AS) + ")");
       } else {
-        DefNames.set(PT, "PointerType::getUnqual(" + DefNames.get(ET) + ")");
+        DefNames.set(PT, "PointerType::getUnqual(" + EN + ")");
       }
     }
     return;
@@ -662,7 +654,7 @@ void CxxApiWriterPass::initCommonType(Type *Ty, TypeSet &Ts) {
 std::string CxxApiWriterPass::getGEPInstOperands(const GetElementPtrInst *GEP) {
   std::string Names;
   for (unsigned N = 1; N < GEP->getNumOperands(); N++) {
-    Names = Names + DefNames.get(GEP->getOperand(N)) + ", ";
+    Names += DefNames.get(GEP->getOperand(N)) + ", ";
   }
   if (StringRef(Names).endswith(", "))
     Names = StringRef(Names).drop_back(2).str();
@@ -673,7 +665,7 @@ std::string CxxApiWriterPass::getArgOperands(
     const iterator_range<User::const_op_iterator> &Operands) {
   std::string Names;
   for (auto &Arg : Operands) {
-    Names = Names + DefNames.get(Arg) + ", ";
+    Names += DefNames.get(Arg) + ", ";
   }
   if (StringRef(Names).endswith(", "))
     Names = StringRef(Names).drop_back(2).str();
@@ -686,7 +678,7 @@ std::string CxxApiWriterPass::getConstList(const GEPOperator *GEP,
   for (auto Idx = GEP->idx_begin(); Idx != GEP->idx_end(); Idx++) {
     auto C = cast<Constant>(Idx);
     printConstant(C);
-    Names = Names + DefNames.get(C) + ", ";
+    Names += DefNames.get(C) + ", ";
   }
   std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
   std::string Suffix = NeedCast ? "})" : "}";
@@ -701,7 +693,7 @@ std::string CxxApiWriterPass::getConstList(const ConstantAggregate *CA,
   for (unsigned i = 0; i < CA->getNumOperands(); i++) {
     auto C = CA->getOperand(i);
     printConstant(C);
-    Names = Names + DefNames.get(C) + ", ";
+    Names += DefNames.get(C) + ", ";
   }
   std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
   std::string Suffix = NeedCast ? "})" : "}";
@@ -716,7 +708,7 @@ std::string CxxApiWriterPass::getConstList(const ConstantDataSequential *CDS,
   for (unsigned i = 0; i < CDS->getNumElements(); i++) {
     auto C = CDS->getElementAsConstant(i);
     printConstant(C);
-    Names = Names + DefNames.get(C) + ", ";
+    Names += DefNames.get(C) + ", ";
   }
   std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
   std::string Suffix = NeedCast ? "})" : "}";
@@ -730,7 +722,7 @@ std::string CxxApiWriterPass::getTypeList(const std::vector<Type *> &TyList,
   std::string Names;
   for (auto Ty : TyList) {
     printType(Ty);
-    Names = Names + DefNames.get(Ty) + ", ";
+    Names += DefNames.get(Ty) + ", ";
   }
   std::string Prefix = NeedCast ? "ArrayRef<Type *>({" : "{";
   std::string Suffix = NeedCast ? "})" : "}";
@@ -740,16 +732,17 @@ std::string CxxApiWriterPass::getTypeList(const std::vector<Type *> &TyList,
 }
 
 static const std::map<Attribute::AttrKind, std::string> Attrs = {
-    {Attribute::Alignment, "Alignment"},
-    {Attribute::AllocSize, "AllocSize"},
+    /// FIXME: not completely implemented
+    //{Attribute::Alignment, "Alignment"},
+    //{Attribute::AllocSize, "AllocSize"},
     {Attribute::AlwaysInline, "AlwaysInline"},
     {Attribute::ArgMemOnly, "ArgMemOnly"},
     {Attribute::Builtin, "Builtin"},
     {Attribute::ByVal, "ByVal"},
     {Attribute::Cold, "Cold"},
     {Attribute::Convergent, "Convergent"},
-    {Attribute::Dereferenceable, "Dereferenceable"},
-    {Attribute::DereferenceableOrNull, "DereferenceableOrNull"},
+    //{Attribute::Dereferenceable, "Dereferenceable"},
+    //{Attribute::DereferenceableOrNull, "DereferenceableOrNull"},
     {Attribute::InAlloca, "InAlloca"},
     {Attribute::InReg, "InReg"},
     {Attribute::InaccessibleMemOnly, "InaccessibleMemOnly"},
@@ -815,8 +808,8 @@ void CxxApiWriterPass::printAttributes(const Function *F,
 
 void CxxApiWriterPass::printAttributes(const CallInst *CI,
                                        const std::string &Name) {
-#if LLVM_VERSION_BEFORE(5, 0)
   using Pair = std::pair<Attribute::AttrKind, std::string>;
+#if LLVM_VERSION_BEFORE(5, 0)
   std::for_each(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
     if (CI->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
                                          Att.first)) {
@@ -825,7 +818,6 @@ void CxxApiWriterPass::printAttributes(const CallInst *CI,
     }
   });
 #else
-  using Pair = std::pair<Attribute::AttrKind, std::string>;
   std::for_each(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
     if (CI->getAttributes().hasAttribute(AttributeList::ReturnIndex,
                                          Att.first)) {
@@ -838,8 +830,8 @@ void CxxApiWriterPass::printAttributes(const CallInst *CI,
 
 void CxxApiWriterPass::printAttributes(const InvokeInst *Inv,
                                        const std::string &Name) {
-#if LLVM_VERSION_BEFORE(5, 0)
   using Pair = std::pair<Attribute::AttrKind, std::string>;
+#if LLVM_VERSION_BEFORE(5, 0)
   std::for_each(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
     if (Inv->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
                                           Att.first)) {
@@ -848,7 +840,6 @@ void CxxApiWriterPass::printAttributes(const InvokeInst *Inv,
     }
   });
 #else
-  using Pair = std::pair<Attribute::AttrKind, std::string>;
   std::for_each(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
     if (Inv->getAttributes().hasAttribute(AttributeList::ReturnIndex,
                                           Att.first)) {
@@ -1720,12 +1711,13 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   case Instruction::LandingPad: {
     auto LPI = cast<LandingPadInst>(I);
     nl() << "auto " << ValName << " = IRB.CreateLandingPad("
-         << DefNames.get(LPI->getType()) << ", " << OpNames[0] << ", "
-         << LPI->getNumClauses() << lastNameArg(I);
+         << DefNames.get(LPI->getType()) << ", " << LPI->getNumClauses()
+         << lastNameArg(I);
     if (LPI->isCleanup())
       nl() << ValName << "->setCleanup(true);";
     for (unsigned i = 0, e = LPI->getNumClauses(); i != e; ++i)
-      nl() << ValName << "->addClause(" << OpNames[i + 1] << ");";
+      nl() << ValName << "->addClause("
+           << getOperandName(LPI->getClause(i), Refs) << ");";
     nl();
     return;
   }
@@ -1764,9 +1756,11 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
 #if LLVM_VERSION_BEFORE(3, 7)
 #else
-  case Instruction::AddrSpaceCast:
-    /// FIXME : need impl
-    report_fatal_error("unknow instruction!");
+  case Instruction::AddrSpaceCast: {
+    nl() << "IRB.CreateAddrSpaceCast(" << OpNames[0] << ", "
+         << DefNames.get(I->getType()) << lastNameArg(I);
+    return;
+  }
   case Instruction::CleanupRet: {
     nl() << "IRB.CreateCleanupRet(" << OpNames[0] << ", " << OpNames[1] << ");";
     nl();
@@ -1950,7 +1944,7 @@ void CxxApiWriterPass::printModuleBody() {
   // Functions can call each other and global variables can reference them
   // so define all the functions first before emitting their function
   // bodies.
-  if (TheModule->size()) {
+  if (!TheModule->empty()) {
     nl();
     nl() << "//";
     nl() << "// Function Declarations";
@@ -2057,7 +2051,7 @@ bool CxxApiWriterPass::runOnModule(Module &M) {
 
   printModuleBody();
 
-  nl() << "return std::move(M);";
+  nl() << "return M;";
   outdent();
   nl() << "}";
   nl();

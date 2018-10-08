@@ -34,16 +34,15 @@ using namespace llvm;
 static cl::opt<std::string>
     InputFilename(cl::Positional, cl::desc("<input file>"), cl::init("-"));
 
-static cl::opt<std::string> OutputFilename("o", cl::desc("Output filename"),
-                                           cl::init("-"));
+static cl::opt<std::string>
+    OutputFilename("o", cl::Optional, cl::desc("outout file"), cl::init("-"));
 
 static cl::opt<bool> IR("ir", cl::Optional,
                         cl::desc("Print IR contents as comments."),
                         cl::init(false));
 
-
 int main(int argc, char **argv) {
-  cl::ParseCommandLineOptions(argc, argv, " llvm-cpp converter\n");
+  cl::ParseCommandLineOptions(argc, argv, " llvm-cxxapi converter\n");
 
   LLVMContext Context;
 

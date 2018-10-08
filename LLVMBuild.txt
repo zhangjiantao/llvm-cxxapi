@@ -1,4 +1,4 @@
-;===- ./tools/llvm-cxxdump/LLVMBuild.txt -----------------------*- Conf -*--===;
+;===- ./projects/llvm-cxxapi/LLVMBuild.txt ---------------------*- Conf -*--===;
 ;
 ;                     The LLVM Compiler Infrastructure
 ;
