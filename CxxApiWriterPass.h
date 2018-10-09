@@ -19,7 +19,7 @@ namespace llvm {
 class ModulePass;
 class raw_ostream;
 
-ModulePass *createCxxApiWriterPass(raw_ostream &OS, bool IR = true);
+ModulePass *createCxxApiWriterPass(raw_ostream &OS, bool IR, bool Short);
 } // namespace llvm
 
 #endif // LLVM_TOOLS_LLVMCXXAPIWRITERPASS_H

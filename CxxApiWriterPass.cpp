@@ -81,8 +81,11 @@ class NameBuilder {
   TypeMap Types;
   ValueMap Values;
   std::set<std::string> UsedNames;
+  bool ShortName;
 
   std::string getPrefix(Type *Ty) {
+    if (ShortName)
+      return "";
     switch (Ty->getTypeID()) {
     case Type::VoidTyID:
       return "Void";
@@ -126,6 +129,8 @@ class NameBuilder {
   }
 
   std::string getPrefix(const Value *Val) {
+    if (ShortName)
+      return "Var";
     if (auto G = dyn_cast<GlobalVariable>(Val)) {
       auto ET = G->getType()->getElementType();
       return "Global" + getPrefix(ET);
@@ -149,14 +154,17 @@ class NameBuilder {
   template <typename T> std::string getUnique(T *Obj, const char *Suffix = "") {
     unsigned i = 0;
     auto Prefix = getPrefix(Obj) + Suffix;
-    auto Name = Prefix;
-    while (UsedNames.find(Name) != UsedNames.end())
+    std::string Name;
+    do {
       Name = Prefix + utohexstr(++i, true);
+    } while (UsedNames.find(Name) != UsedNames.end());
     UsedNames.insert(Name);
     return Name;
   }
 
 public:
+  explicit NameBuilder(bool Short) : ShortName(Short) {}
+
   bool has(Type *Ty) { return Types.find(Ty) != Types.end(); }
   bool has(const Value *Val) { return Values.find(Val) != Values.end(); }
   // Insert a defined name
@@ -180,27 +188,24 @@ public:
 /// LLVM module to a C++ translation unit.
 struct CxxApiWriterPass : public ModulePass {
   static char ID;
-  explicit CxxApiWriterPass(raw_ostream &OS, bool IR)
-      : ModulePass(ID), Out(OS), isPrintIR(IR), IndentLevel(0),
-        TheModule(nullptr) {}
+  explicit CxxApiWriterPass(raw_ostream &OS, bool IR, bool Short)
+      : ModulePass(ID), Out(OS), isPrintIR(IR), TheModule(nullptr),
+        DefNames(Short), IndentLevel(0) {}
 
   bool runOnModule(Module &M) override;
 
 #if LLVM_VERSION_BEFORE(4, 0)
-  const char *
+  const char *getPassName() const override { return "llvm-cxxapi writer"; }
 #else
-  StringRef
+  StringRef getPassName() const override { return "llvm-cxxapi writer"; }
 #endif
-  getPassName() const override {
-    return "llvm-cxxapi writer";
-  }
 
 private:
   raw_ostream &Out;
   bool isPrintIR;
-  unsigned IndentLevel;
   const Module *TheModule;
   NameBuilder DefNames;
+  unsigned IndentLevel;
 
 private:
   inline void indent() { ++IndentLevel; }
@@ -2197,7 +2202,7 @@ bool CxxApiWriterPass::runOnModule(Module &M) {
 char CxxApiWriterPass::ID = 0;
 
 namespace llvm {
-ModulePass *createCxxApiWriterPass(raw_ostream &OS, bool IR) {
-  return new CxxApiWriterPass(OS, IR);
+ModulePass *createCxxApiWriterPass(raw_ostream &OS, bool IR, bool Short) {
+  return new CxxApiWriterPass(OS, IR, Short);
 }
 } // namespace llvm

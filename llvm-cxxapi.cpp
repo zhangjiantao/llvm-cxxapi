@@ -41,6 +41,10 @@ static cl::opt<bool> IR("ir", cl::Optional,
                         cl::desc("Print IR contents as comments."),
                         cl::init(false));
 
+static cl::opt<bool> Short("short", cl::Optional,
+                           cl::desc("Generate short variable names."),
+                           cl::init(false));
+
 int main(int argc, char **argv) {
   cl::ParseCommandLineOptions(argc, argv, " llvm-cxxapi converter\n");
 
@@ -64,7 +68,7 @@ int main(int argc, char **argv) {
 
   // Run cpp writer pass
   legacy::PassManager PM;
-  PM.add(createCxxApiWriterPass(Out, IR));
+  PM.add(createCxxApiWriterPass(Out, IR, Short));
   PM.run(*M);
 
   llvm_shutdown();
