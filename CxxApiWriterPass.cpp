@@ -68,7 +68,7 @@ using namespace llvm;
 // Normalize a llvm value name to cxx variable name
 static std::string Normalize(const std::string &);
 // Normalize a llvm literal string to cxx literal string
-static std::string Literal(const std::string &);
+static std::string Literally(const std::string &);
 
 namespace {
 using ValueMap = std::map<const Value *, std::string>;
@@ -215,8 +215,9 @@ private:
 
   inline StringRef btostr(bool B) { return B ? "true" : "false"; }
   inline std::string lastNameArg(const Instruction *I) {
-    return I->hasName() ? std::string(", ") + Literal(I->getName().str()) + ");"
-                        : ");";
+    return I->hasName()
+               ? std::string(", ") + Literally(I->getName().str()) + ");"
+               : ");";
   }
   inline StringRef lastBoolArg(bool B) { return B ? ", true);" : ");"; }
 
@@ -259,6 +260,9 @@ private:
   void printFunctionAttr(const Function *);
   void printFunctionBody(const Function *);
 
+  bool isCommonIntrinsic(const Function *);
+  bool isCommonIntrinsic(const CallInst *);
+  void printIntrinsic(const CallInst *, ValueMap &);
   void printInstruction(const Instruction *, ValueMap &);
 
   void printModuleBody();
@@ -468,7 +472,7 @@ static std::string Normalize(const std::string &Str) {
   return Result;
 }
 
-static std::string Literal(const std::string &Str) {
+static std::string Literally(const std::string &Str) {
   std::string Result;
   raw_string_ostream OS(Result);
   const std::map<unsigned char, std::string> Escapes = {
@@ -996,7 +1000,7 @@ void CxxApiWriterPass::printStructTypeHead(StructType *ST) {
          << btostr(ST->isPacked()) << "); // isLiteral";
   } else {
     nl() << "auto " << TypeName << " = StructType::create(Ctx, "
-         << Literal(ST->getName()) << ");";
+         << Literally(ST->getName()) << ");";
     if (ST->isOpaque()) {
       cl() << "  // opaque";
     }
@@ -1186,7 +1190,7 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
       auto NulTerm = (Str.back() == 0);
       if (NulTerm)
         Str = Str.drop_back();
-      cl() << Literal(Str) << ", " << btostr(NulTerm) << ");";
+      cl() << Literally(Str) << ", " << btostr(NulTerm) << ");";
     } else if (CDS->getElementType()->isIntegerTy() &&
                (CDS->getElementType()->getIntegerBitWidth() == 8 ||
                 CDS->getElementType()->getIntegerBitWidth() == 16 ||
@@ -1390,10 +1394,10 @@ void CxxApiWriterPass::printVariableHead(const GlobalVariable *GV) {
        << btostr(GV->isConstant()) << ", " << getLinkageType(GV)
        << ", nullptr);";
   if (GV->hasName()) {
-    nl() << Name << "->setName(" << Literal(GV->getName()) << ");";
+    nl() << Name << "->setName(" << Literally(GV->getName()) << ");";
   }
   if (GV->hasSection()) {
-    nl() << Name << "->setSection(" << Literal(GV->getSection()) << ");";
+    nl() << Name << "->setSection(" << Literally(GV->getSection()) << ");";
   }
   if (GV->getAlignment()) {
     nl() << Name << "->setAlignment(" << GV->getAlignment() << ");";
@@ -1413,7 +1417,7 @@ void CxxApiWriterPass::printVariableHead(const GlobalVariable *GV) {
     if (GV->getName() == GV->getComdat()->getName()) {
       cl() << Name << "->getName()));";
     } else {
-      cl() << Literal(GV->getComdat()->getName()) << ")));";
+      cl() << Literally(GV->getComdat()->getName()) << ")));";
     }
   }
   if (GV->getUnnamedAddr() != GlobalValue::UnnamedAddr::None) {
@@ -1432,7 +1436,7 @@ void CxxApiWriterPass::printVariableBody(const GlobalVariable *GV) {
   }
 }
 
-// Get oprand def name, if undef, make a placeholder
+// getOperandName - Get oprand def name, if undef, make a placeholder
 std::string CxxApiWriterPass::getOperandName(const Value *V, ValueMap &Refs) {
   // See if its alread in the map of forward references, if so just return
   // the name we already set up for it
@@ -1457,6 +1461,83 @@ std::string CxxApiWriterPass::getOperandName(const Value *V, ValueMap &Refs) {
   return Refs[V] = Name;
 }
 
+bool CxxApiWriterPass::isCommonIntrinsic(const Function *F) {
+  if (F->isIntrinsic()) {
+    switch (F->getIntrinsicID()) {
+    case Intrinsic::lifetime_start:
+    case Intrinsic::lifetime_end:
+    case Intrinsic::memcpy:
+    case Intrinsic::memmove:
+    case Intrinsic::memset:
+    case Intrinsic::assume:
+      return true;
+    default:
+      return false;
+    }
+  }
+  return false;
+}
+
+bool CxxApiWriterPass::isCommonIntrinsic(const CallInst *CI) {
+  if (auto F = CI->getCalledFunction())
+    return isCommonIntrinsic(F);
+  return false;
+}
+
+// printIntrinsic - Print llvm intrinsic, this assume CI is a intrinsic call
+void CxxApiWriterPass::printIntrinsic(const CallInst *CI, ValueMap &Refs) {
+  assert(isCommonIntrinsic(CI) && "not a common intrisic!");
+
+  std::vector<std::string> ArgNames;
+  for (unsigned i = 0; i < CI->getNumArgOperands(); i++) {
+    ArgNames.push_back(getOperandName(CI->getArgOperand(i), Refs));
+  }
+
+  auto F = CI->getCalledFunction();
+  switch (F->getIntrinsicID()) {
+  case Intrinsic::lifetime_start: {
+    nl() << "IRB.CreateLifetimeStart(" << ArgNames[1] << ", " << ArgNames[0]
+         << ");";
+    return;
+  }
+  case Intrinsic::lifetime_end: {
+    nl() << "IRB.CreateLifetimeEnd(" << ArgNames[1] << ", " << ArgNames[0]
+         << ");";
+    return;
+  }
+  case Intrinsic::memcpy: {
+    auto Align = cast<ConstantInt>(CI->getArgOperand(3))->getZExtValue();
+    auto Volatile =
+        btostr(cast<ConstantInt>(CI->getArgOperand(4))->getZExtValue() != 0);
+    nl() << "IRB.CreateMemCpy(" << ArgNames[0] << ", " << ArgNames[1] << ", "
+         << ArgNames[2] << ", " << Align << ", " << Volatile << ");";
+    return;
+  }
+  case Intrinsic::memmove: {
+    auto Align = cast<ConstantInt>(CI->getArgOperand(3))->getZExtValue();
+    auto isVolatile =
+        btostr(cast<ConstantInt>(CI->getArgOperand(4))->getZExtValue() != 0);
+    nl() << "IRB.CreateMemMove(" << ArgNames[0] << ", " << ArgNames[1] << ", "
+         << ArgNames[2] << ", " << Align << ", " << isVolatile << ");";
+    return;
+  }
+  case Intrinsic::memset: {
+    auto Align = cast<ConstantInt>(CI->getArgOperand(3))->getZExtValue();
+    auto isVolatile =
+        btostr(cast<ConstantInt>(CI->getArgOperand(4))->getZExtValue() != 0);
+    nl() << "IRB.CreateMemSet(" << ArgNames[0] << ", " << ArgNames[1] << ", "
+         << ArgNames[2] << ", " << Align << ", " << isVolatile << ");";
+    return;
+  }
+  case Intrinsic::assume: {
+    nl() << "IRB.CreateAssumption(" << ArgNames[0] << ");";
+    return;
+  }
+  default:
+    report_fatal_error("not a common intrisic!");
+  }
+}
+
 // printInstruction - This member is called for each Instruction in a
 // function.
 void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
@@ -1466,6 +1547,7 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
 
   auto ValName = DefNames.get(I);
+  auto ValTyName = DefNames.get(I->getType());
 
   // If defined instruction has forward reference, update Refs map
   if (Refs.find(I) != Refs.end()) {
@@ -1489,7 +1571,7 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
       auto Nuw = BO->hasNoUnsignedWrap();
       auto Nsw = BO->hasNoSignedWrap();
       if (Nuw || Nsw) {
-        cl() << ", " << Literal(I->getName()) << ", " << btostr(Nuw) << ", "
+        cl() << ", " << Literally(I->getName()) << ", " << btostr(Nuw) << ", "
              << btostr(Nsw) << ");";
         return;
       }
@@ -1501,7 +1583,7 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   if (Instruction::isCast(I->getOpcode())) {
     auto CastOpName = getCastOp(I->getOpcode());
     nl() << "auto " << ValName << " = IRB.Create" << CastOpName << "("
-         << OpNames[0] << ", " << DefNames.get(I->getType()) << lastNameArg(I);
+         << OpNames[0] << ", " << ValTyName << lastNameArg(I);
     return;
   }
 
@@ -1537,21 +1619,21 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
 #else
       auto Case = It;
 #endif
-      auto CaseVal = Case->getCaseValue();
+      auto CaseVal = DefNames.get(Case->getCaseValue());
       auto BBName = DefNames.get(Case->getCaseSuccessor());
-      nl() << ValName << "->addCase(" << getOperandName(CaseVal, Refs) << ", "
-           << BBName << ");";
+      nl() << ValName << "->addCase(" << CaseVal << ", " << BBName << ");";
     }
     nl();
     return;
   }
   case Instruction::IndirectBr: {
     auto IBI = cast<IndirectBrInst>(I);
+    auto NumDest = IBI->getNumDestinations();
     nl() << "auto " << ValName << " = IRB.CreateIndirectBr(" << OpNames[0]
-         << ", " << IBI->getNumDestinations() << ");";
-    for (unsigned i = 0; i != IBI->getNumDestinations(); ++i)
+         << ", " << NumDest << ");";
+    for (unsigned i = 0; i != NumDest; ++i)
       nl() << ValName << "->addDestination("
-           << getOperandName(IBI->getDestination(i), Refs) << ");";
+           << DefNames.get(IBI->getDestination(i)) << ");";
     nl();
     return;
   }
@@ -1561,12 +1643,11 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
   case Instruction::Invoke: {
     auto Inv = cast<InvokeInst>(I);
-    auto Args = getArgOperands(Inv->arg_operands());
     nl() << "auto " << ValName << " = IRB.CreateInvoke("
          << getOperandName(Inv->getCalledValue(), Refs) << ", "
-         << getOperandName(Inv->getNormalDest(), Refs) << ", "
-         << getOperandName(Inv->getUnwindDest(), Refs) << ", " << Args
-         << lastNameArg(I);
+         << DefNames.get(Inv->getNormalDest()) << ", "
+         << DefNames.get(Inv->getUnwindDest()) << ", "
+         << getArgOperands(Inv->arg_operands()) << lastNameArg(I);
     nl() << ValName << "->setCallingConv(" << getCallingConv(Inv) << ");";
     printAttributes(Inv, ValName);
     nl();
@@ -1578,16 +1659,14 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
   case Instruction::Alloca: {
     auto AI = cast<AllocaInst>(I);
-    nl() << "auto " << ValName << " = IRB.CreateAlloca("
-         << DefNames.get(AI->getAllocatedType());
+    auto AllocTy = DefNames.get(AI->getAllocatedType());
+    nl() << "auto " << ValName << " = IRB.CreateAlloca(" << AllocTy;
     if (AI->isArrayAllocation()) {
       cl() << ", " << OpNames[0] << lastNameArg(I);
+    } else if (I->hasName()) {
+      cl() << ", nullptr" << lastNameArg(I);
     } else {
-      if (I->hasName()) {
-        cl() << ", nullptr" << lastNameArg(I);
-      } else {
-        cl() << ");";
-      }
+      cl() << ");";
     }
     if (AI->getAlignment()) {
       nl() << ValName << "->setAlignment(" << AI->getAlignment() << ");";
@@ -1597,7 +1676,11 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
   case Instruction::Load: {
     auto LD = cast<LoadInst>(I);
-    nl() << "auto " << ValName << " = ";
+    if (LD->isAtomic() || LD->hasNUsesOrMore(1))
+      nl() << "auto " << ValName << " = ";
+    else
+      nl();
+
     if (LD->getAlignment()) {
       cl() << "IRB.CreateAlignedLoad(" << OpNames[0] << ", "
            << LD->getAlignment() << lastBoolArg(LD->isVolatile());
@@ -1607,20 +1690,19 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     }
     if (LD->isAtomic()) {
       auto Ordering = getAtomicOrdering(LD->getOrdering());
-      auto CrossThread = getAtomicSynchScope(LD);
-      nl() << ValName << "->setAtomic(" << Ordering << ", " << CrossThread
-           << ");";
+      auto Scope = getAtomicSynchScope(LD);
+      nl() << ValName << "->setAtomic(" << Ordering << ", " << Scope << ");";
       nl();
     }
     return;
   }
   case Instruction::Store: {
     auto ST = cast<StoreInst>(I);
-    if (ST->isAtomic()) {
+    if (ST->isAtomic())
       nl() << "auto " << ValName << " = ";
-    } else {
+    else
       nl();
-    }
+
     if (ST->getAlignment()) {
       cl() << "IRB.CreateAlignedStore(" << OpNames[0] << ", " << OpNames[1]
            << ", " << ST->getAlignment() << lastBoolArg(ST->isVolatile());
@@ -1630,9 +1712,8 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     }
     if (ST->isAtomic()) {
       auto Ordering = getAtomicOrdering(ST->getOrdering());
-      auto CrossThread = getAtomicSynchScope(ST);
-      nl() << ValName << "->setAtomic(" << Ordering << ", " << CrossThread
-           << ");";
+      auto Scope = getAtomicSynchScope(ST);
+      nl() << ValName << "->setAtomic(" << Ordering << ", " << Scope << ");";
     }
     return;
   }
@@ -1640,49 +1721,54 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     auto GEP = cast<GetElementPtrInst>(I);
     auto Method = GEP->isInBounds() ? "CreateInBoundsGEP(" : "CreateGEP(";
     nl() << "auto " << ValName << " = IRB." << Method << OpNames[0];
-    if (GEP->getNumIndices() == 1) {
+    if (GEP->getNumIndices() == 1)
       cl() << ", " << OpNames[1];
-    } else if (GEP->getNumIndices() > 1) {
+    else if (GEP->getNumIndices() > 1)
       cl() << ", " << getGEPInstOperands(GEP);
-    }
+
     cl() << lastNameArg(I);
     return;
   }
   case Instruction::ICmp: {
-    auto Predic = getICmpPred(cast<ICmpInst>(I)->getPredicate());
-    nl() << "auto " << ValName << " = IRB.CreateICmp" << Predic << "("
+    auto Pred = getICmpPred(cast<ICmpInst>(I)->getPredicate());
+    nl() << "auto " << ValName << " = IRB.CreateICmp" << Pred << "("
          << OpNames[0] << ", " << OpNames[1] << lastNameArg(I);
     return;
   }
   case Instruction::FCmp: {
-    auto Predic = getFCmpPred(cast<FCmpInst>(I)->getPredicate());
-    nl() << "auto " << ValName << " = IRB.CreateFCmp" << Predic << "("
+    auto Pred = getFCmpPred(cast<FCmpInst>(I)->getPredicate());
+    nl() << "auto " << ValName << " = IRB.CreateFCmp" << Pred << "("
          << OpNames[0] << ", " << OpNames[1] << lastNameArg(I);
     return;
   }
   case Instruction::PHI: {
     auto Phi = cast<PHINode>(I);
-    nl() << "auto " << ValName << " = IRB.CreatePHI("
-         << DefNames.get(Phi->getType()) << ", " << Phi->getNumIncomingValues()
-         << lastNameArg(I);
-    for (unsigned i = 0; i < Phi->getNumIncomingValues(); ++i) {
+    auto NumIncom = Phi->getNumIncomingValues();
+    nl() << "auto " << ValName << " = IRB.CreatePHI(" << ValTyName << ", "
+         << NumIncom << lastNameArg(I);
+    for (unsigned i = 0; i < NumIncom; ++i) {
       nl() << ValName << "->addIncoming("
            << getOperandName(Phi->getIncomingValue(i), Refs) << ", "
-           << getOperandName(Phi->getIncomingBlock(i), Refs) << ");";
+           << DefNames.get(Phi->getIncomingBlock(i)) << ");";
     }
     nl();
     return;
   }
   case Instruction::Call: {
     auto Call = cast<CallInst>(I);
+    if (isCommonIntrinsic(Call)) {
+      printIntrinsic(Call, Refs);
+      return;
+    }
+
     auto FunName = getOperandName(Call->getCalledValue(), Refs);
     if (auto ILA = dyn_cast<InlineAsm>(Call->getCalledValue())) {
       FunName = "ILA" + ValName;
-      nl() << "auto " << FunName << " = InlineAsm::get("
-           << DefNames.get(ILA->getFunctionType()) << ", "
-           << Literal(ILA->getAsmString()) << ", "
-           << Literal(ILA->getConstraintString()) << ", "
-           << btostr(ILA->hasSideEffects()) << ");";
+      nl() << "auto " << FunName << " = InlineAsm::get(";
+      cl() << DefNames.get(ILA->getFunctionType()) << ", ";
+      cl() << Literally(ILA->getAsmString()) << ", ";
+      cl() << Literally(ILA->getConstraintString()) << ", ";
+      cl() << btostr(ILA->hasSideEffects()) << ");";
     }
     if (Call->getCallingConv() || Call->isTailCall() ||
         Call->hasNUsesOrMore(1) /*|| !Call->getType()->isVoidTy()*/) {
@@ -1714,11 +1800,11 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
   case Instruction::VAArg: {
     nl() << "auto " << ValName << " = IRB.CreateVAArg(" << OpNames[0] << ", "
-         << DefNames.get(I->getType()) << lastNameArg(I);
+         << ValTyName << lastNameArg(I);
     return;
   }
   case Instruction::ExtractElement: {
-    nl() << "auto " << ValName << " = IRB.CreateExtractElement((" << OpNames[0]
+    nl() << "auto " << ValName << " = IRB.CreateExtractElement(" << OpNames[0]
          << ", " << OpNames[1] << lastNameArg(I);
     return;
   }
@@ -1735,8 +1821,8 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   case Instruction::ExtractValue: {
     auto EVI = cast<ExtractValueInst>(I);
     auto Idxs = std::string("{");
-    for (unsigned i = 0; i < EVI->getNumIndices(); ++i)
-      Idxs += utostr(EVI->idx_begin()[i]) + ", ";
+    for (auto i : EVI->indices())
+      Idxs += utostr(i) + ", ";
     Idxs = StringRef(Idxs).drop_back(2).str() + "}";
     cl() << "auto " << ValName << " = IRB.CreateExtractValue(" << OpNames[0]
          << ", " << Idxs << lastNameArg(I);
@@ -1745,8 +1831,8 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   case Instruction::InsertValue: {
     auto IVI = cast<InsertValueInst>(I);
     auto Idxs = std::string("{");
-    for (unsigned i = 0; i < IVI->getNumIndices(); ++i)
-      Idxs += utostr(IVI->idx_begin()[i]) + ", ";
+    for (auto i : IVI->indices())
+      Idxs += utostr(i) + ", ";
     Idxs = StringRef(Idxs).drop_back(2).str() + "}";
     cl() << "auto " << ValName << " = IRB.CreateInsertValue(" << OpNames[0]
          << ", " << OpNames[1] << ", " << Idxs << lastNameArg(I);
@@ -1755,16 +1841,15 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   case Instruction::Fence: {
     auto FI = cast<FenceInst>(I);
     auto Ordering = getAtomicOrdering(FI->getOrdering());
-    auto CrossThread = getAtomicSynchScope(FI);
+    auto Scope = getAtomicSynchScope(FI);
     nl() << "auto " << ValName << " = IRB.CreateFence(" << Ordering << ", "
-         << CrossThread << lastNameArg(I);
+         << Scope << lastNameArg(I);
     return;
   }
   case Instruction::LandingPad: {
     auto LPI = cast<LandingPadInst>(I);
-    nl() << "auto " << ValName << " = IRB.CreateLandingPad("
-         << DefNames.get(LPI->getType()) << ", " << LPI->getNumClauses()
-         << lastNameArg(I);
+    nl() << "auto " << ValName << " = IRB.CreateLandingPad(" << ValTyName
+         << ", " << LPI->getNumClauses() << lastNameArg(I);
     if (LPI->isCleanup())
       nl() << ValName << "->setCleanup(true);";
     for (unsigned i = 0, e = LPI->getNumClauses(); i != e; ++i)
@@ -1775,14 +1860,14 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
   case Instruction::AtomicCmpXchg: {
     auto CXI = cast<AtomicCmpXchgInst>(I);
-    auto SuccOrdering = getAtomicOrdering(CXI->getSuccessOrdering());
-    auto FailOrdering = getAtomicOrdering(CXI->getFailureOrdering());
-    auto CrossThread = getAtomicSynchScope(CXI);
+    auto SuccOrd = getAtomicOrdering(CXI->getSuccessOrdering());
+    auto FailOrd = getAtomicOrdering(CXI->getFailureOrdering());
+    auto SyncScope = getAtomicSynchScope(CXI);
     nl() << "auto " << ValName << " = IRB.CreateAtomicCmpXchg(" << OpNames[0]
-         << ", " << OpNames[1] << ", " << OpNames[2] << ", " << SuccOrdering
-         << ", " << FailOrdering << ", " << CrossThread << ");";
+         << ", " << OpNames[1] << ", " << OpNames[2] << ", " << SuccOrd << ", "
+         << FailOrd << ", " << SyncScope << ");";
     if (I->hasName())
-      nl() << ValName << "->setName(" << Literal(I->getName()) << ");";
+      nl() << ValName << "->setName(" << Literally(I->getName()) << ");";
     if (CXI->isVolatile())
       nl() << ValName << "->setVolatile(true);";
     if (CXI->isWeak())
@@ -1793,14 +1878,13 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   case Instruction::AtomicRMW: {
     auto RMWI = cast<AtomicRMWInst>(I);
     auto Ordering = getAtomicOrdering(RMWI->getOrdering());
-    auto CrossThread = getAtomicSynchScope(RMWI);
+    auto SyncScope = getAtomicSynchScope(RMWI);
     auto Operation = getRMWBinOp(RMWI->getOperation());
     nl() << "auto " << ValName
          << " = IRB.CreateAtomicRMW(AtomicRMWInst::" << Operation << OpNames[0]
-         << ", " << OpNames[1] << ", " << Ordering << ", " << CrossThread
-         << ");";
+         << ", " << OpNames[1] << ", " << Ordering << ", " << SyncScope << ");";
     if (I->hasName())
-      nl() << ValName << "->setName(" << Literal(I->getName()) << ");";
+      nl() << ValName << "->setName(" << Literally(I->getName()) << ");";
     if (RMWI->isVolatile())
       nl() << ValName << "->setVolatile(true);";
     nl();
@@ -1809,8 +1893,8 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
 #if LLVM_VERSION_BEFORE(3, 7)
 #else
   case Instruction::AddrSpaceCast: {
-    nl() << "IRB.CreateAddrSpaceCast(" << OpNames[0] << ", "
-         << DefNames.get(I->getType()) << lastNameArg(I);
+    nl() << "IRB.CreateAddrSpaceCast(" << OpNames[0] << ", " << ValTyName
+         << lastNameArg(I);
     return;
   }
   case Instruction::CleanupRet: {
@@ -1841,15 +1925,13 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     auto CSI = cast<CatchSwitchInst>(I);
     nl() << "auto " << ValName << " = IRB.CreateCatchSwitch("
          << getOperandName(CSI->getParentPad(), Refs) << ", ";
-    if (CSI->hasUnwindDest()) {
+    if (CSI->hasUnwindDest())
       cl() << DefNames.get(CSI->getUnwindDest());
-    } else {
+    else
       cl() << "nullptr";
-    }
     cl() << ", " << CSI->getNumHandlers() << lastNameArg(I);
-    for (auto BB : CSI->handlers()) {
+    for (auto BB : CSI->handlers())
       nl() << ValName << "->addHandler(" << DefNames.get(BB) << ");";
-    }
     nl();
     return;
   }
@@ -1875,14 +1957,14 @@ void CxxApiWriterPass::printFunctionHead(const Function *F) {
   }
   nl() << "auto " << Name << " = Function::Create("
        << DefNames.get(F->getFunctionType()) << ", " << getLinkageType(F)
-       << ", " << Literal(F->getName()) << ", M.get());";
+       << ", " << Literally(F->getName()) << ", M.get());";
 }
 
 void CxxApiWriterPass::printFunctionAttr(const Function *F) {
   auto Name = DefNames.get(F);
   nl() << Name << "->setCallingConv(" << getCallingConv(F) << ");";
   if (F->hasSection()) {
-    nl() << Name << "->setSection(" << Literal(F->getSection()) << ");";
+    nl() << Name << "->setSection(" << Literally(F->getSection()) << ");";
   }
   if (F->getAlignment()) {
     nl() << Name << "->setAlignment(" << F->getAlignment() << ");";
@@ -1895,14 +1977,14 @@ void CxxApiWriterPass::printFunctionAttr(const Function *F) {
          << ");";
   }
   if (F->hasGC()) {
-    nl() << Name << "->setGC(" << Literal(F->getGC()) << ");";
+    nl() << Name << "->setGC(" << Literally(F->getGC()) << ");";
   }
   if (F->hasComdat()) {
     nl() << Name << "->setComdat(M->getOrInsertComdat(";
     if (F->getName() == F->getComdat()->getName()) {
       cl() << Name << "->getName()));";
     } else {
-      cl() << "" << Literal(F->getComdat()->getName()) << ")));";
+      cl() << "" << Literally(F->getComdat()->getName()) << ")));";
     }
   }
   if (F->getUnnamedAddr() != GlobalValue::UnnamedAddr::None) {
@@ -1933,7 +2015,7 @@ void CxxApiWriterPass::printFunctionAttr(const Function *F) {
       auto AiName = "Args[" + utostr(ArgNr) + "]";
       DefNames.set(&AI, AiName);
       if (AI.hasName())
-        nl() << AiName << "->setName(" << Literal(AI.getName()) << ");";
+        nl() << AiName << "->setName(" << Literally(AI.getName()) << ");";
       printAttributes(&AI, AiName);
       ArgNr++;
     }
@@ -1951,7 +2033,7 @@ void CxxApiWriterPass::printFunctionBody(const Function *F) {
   for (auto &BI : F->getBasicBlockList()) {
     auto BBName = DefNames.get(&BI);
     nl() << "auto " << BBName << " = BasicBlock::Create(Ctx, "
-         << Literal(BI.getName()) << ", " << DefNames.get(F) << ");";
+         << Literally(BI.getName()) << ", " << DefNames.get(F) << ");";
   }
 
   // Record undef refrences
@@ -1986,8 +2068,8 @@ void CxxApiWriterPass::printModuleBody() {
     nl() << "//";
     nl() << "// Module InlineAsm";
     nl() << "//";
-    nl() << "M->setModuleInlineAsm(" << Literal(TheModule->getModuleInlineAsm())
-         << ");";
+    nl() << "M->setModuleInlineAsm("
+         << Literally(TheModule->getModuleInlineAsm()) << ");";
   }
 
   // Print out all the type definitions
@@ -2002,7 +2084,8 @@ void CxxApiWriterPass::printModuleBody() {
     nl() << "// Function Declarations";
     nl() << "//";
     for (auto &F : TheModule->functions())
-      printFunctionHead(&F);
+      if (!isCommonIntrinsic(&F))
+        printFunctionHead(&F);
   }
 
   // Process the global variables declarations. We can't initialze them
@@ -2040,7 +2123,8 @@ void CxxApiWriterPass::printModuleBody() {
     nl() << "// Function Definitions";
     nl() << "//";
     for (auto &F : TheModule->functions()) {
-      if (!F.isDeclaration() || hasAnyArgAttribute(&F)) {
+      if (!F.isDeclaration() ||
+          (hasAnyArgAttribute(&F) && !isCommonIntrinsic(&F))) {
         nl() << "// Function: " << F.getName();
         nl() << "if (" << DefNames.get(&F) << ") {";
         indent();
@@ -2093,9 +2177,9 @@ bool CxxApiWriterPass::runOnModule(Module &M) {
   nl() << "std::unique_ptr<Module> makeLLVMModule(LLVMContext &Ctx) {";
   indent();
   nl() << "auto M = llvm::make_unique<Module>("
-       << Literal(M.getModuleIdentifier()) << ", Ctx);";
-  nl() << "M->setDataLayout(" << Literal(M.getDataLayoutStr()) << ");";
-  nl() << "M->setTargetTriple(" << Literal(M.getTargetTriple()) << ");";
+       << Literally(M.getModuleIdentifier()) << ", Ctx);";
+  nl() << "M->setDataLayout(" << Literally(M.getDataLayoutStr()) << ");";
+  nl() << "M->setTargetTriple(" << Literally(M.getTargetTriple()) << ");";
   nl();
   nl() << "IRBuilder<> IRB(Ctx);";
   nl();
