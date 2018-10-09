@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
 
   // Run cpp writer pass
   legacy::PassManager PM;
-  PM.add(createCxxApiWriterPass(Out, IR, Short));
+  PM.add(createCxxApiWriterPass(Out, InputFilename, IR, Short));
   PM.run(*M);
 
   llvm_shutdown();

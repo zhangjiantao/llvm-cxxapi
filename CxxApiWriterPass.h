@@ -14,12 +14,15 @@
 #ifndef LLVM_TOOLS_LLVMCXXAPIWRITERPASS_H
 #define LLVM_TOOLS_LLVMCXXAPIWRITERPASS_H
 
+#include <string>
+
 namespace llvm {
 
 class ModulePass;
 class raw_ostream;
 
-ModulePass *createCxxApiWriterPass(raw_ostream &OS, bool IR, bool Short);
+ModulePass *createCxxApiWriterPass(raw_ostream &OS, const std::string &InFile,
+                                   bool IR, bool Short);
 } // namespace llvm
 
 #endif // LLVM_TOOLS_LLVMCXXAPIWRITERPASS_H
