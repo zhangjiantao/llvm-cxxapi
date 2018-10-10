@@ -26,6 +26,7 @@
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
@@ -64,8 +65,8 @@
 #include "llvm/Support/AtomicOrdering.h"
 #endif
 
-#if LLVM_VERSION_BEFORE(3, 7, 1)
-#error LLVM earlier than 3.7.1 is no longer supported.
+#if LLVM_VERSION_BEFORE(3, 8, 1)
+#error LLVM version earlier than 3.8.1 is no longer supported.
 #endif
 
 using namespace llvm;
@@ -232,20 +233,13 @@ private:
   void printConstantFP(const ConstantFP *);
 
   std::string getGEPInstOperands(const GetElementPtrInst *);
+  std::string getGEPExprOperands(const GEPOperator *);
+  std::string getCDSElements(const ConstantDataSequential *);
+  std::string getCDSElementsAsInt(const ConstantDataSequential *);
   std::string getArgOperands(const iterator_range<User::const_op_iterator> &,
                              bool = false);
   std::string getTypeList(const std::vector<Type *> &, bool = false);
-  std::string getConstList(const ConstantDataSequential *, bool = false);
-  std::string getConstIntList(const ConstantDataSequential *);
-
-#if LLVM_VERSION_BEFORE(3, 9, 1)
-  std::string getConstList(const ConstantArray *, bool = false);
-  std::string getConstList(const ConstantStruct *, bool = false);
-  std::string getConstList(const ConstantVector *, bool = false);
-#else
-  std::string getConstList(const ConstantAggregate *, bool = false);
-#endif
-  std::string getConstList(const GEPOperator *, bool = false);
+  template <typename T> std::string getAggregateElements(const T *);
 
   std::string getOperandName(const Value *, ValueMap &);
 
@@ -695,6 +689,18 @@ std::string CxxApiWriterPass::getGEPInstOperands(const GetElementPtrInst *GEP) {
   return "{" + Names + "}";
 }
 
+std::string CxxApiWriterPass::getGEPExprOperands(const GEPOperator *GEP) {
+  std::string Names;
+  for (auto Idx = GEP->idx_begin(); Idx != GEP->idx_end(); Idx++) {
+    auto C = cast<Constant>(Idx);
+    printConstant(C);
+    Names += DefNames.get(C) + ", ";
+  }
+  if (StringRef(Names).endswith(", "))
+    Names = StringRef(Names).drop_back(2).str();
+  return "ArrayRef<Constant *>({" + Names + "})";
+}
+
 std::string CxxApiWriterPass::getArgOperands(
     const iterator_range<User::const_op_iterator> &Operands, bool NeedCast) {
   std::string Names;
@@ -708,104 +714,34 @@ std::string CxxApiWriterPass::getArgOperands(
   return Prefix + Names + Suffix;
 }
 
-std::string CxxApiWriterPass::getConstList(const GEPOperator *GEP,
-                                           bool NeedCast) {
-  std::string Names;
-  for (auto Idx = GEP->idx_begin(); Idx != GEP->idx_end(); Idx++) {
-    auto C = cast<Constant>(Idx);
-    printConstant(C);
-    Names += DefNames.get(C) + ", ";
-  }
-  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
-  std::string Suffix = NeedCast ? "})" : "}";
-  if (StringRef(Names).endswith(", "))
-    Names = StringRef(Names).drop_back(2).str();
-  return Prefix + Names + Suffix;
-}
-
-#if LLVM_VERSION_BEFORE(3, 9, 1)
-
-std::string CxxApiWriterPass::getConstList(const ConstantArray *CA,
-                                           bool NeedCast) {
+template <typename T>
+std::string CxxApiWriterPass::getAggregateElements(const T *CA) {
   std::string Names;
   for (unsigned i = 0; i < CA->getNumOperands(); i++) {
     auto C = CA->getOperand(i);
     printConstant(C);
     Names += DefNames.get(C) + ", ";
   }
-  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
-  std::string Suffix = NeedCast ? "})" : "}";
   if (StringRef(Names).endswith(", "))
     Names = StringRef(Names).drop_back(2).str();
-  return Prefix + Names + Suffix;
+  return "{" + Names + "}";
 }
 
-std::string CxxApiWriterPass::getConstList(const ConstantStruct *CA,
-                                           bool NeedCast) {
-  std::string Names;
-  for (unsigned i = 0; i < CA->getNumOperands(); i++) {
-    auto C = CA->getOperand(i);
-    printConstant(C);
-    Names += DefNames.get(C) + ", ";
-  }
-  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
-  std::string Suffix = NeedCast ? "})" : "}";
-  if (StringRef(Names).endswith(", "))
-    Names = StringRef(Names).drop_back(2).str();
-  return Prefix + Names + Suffix;
-}
-
-std::string CxxApiWriterPass::getConstList(const ConstantVector *CA,
-                                           bool NeedCast) {
-  std::string Names;
-  for (unsigned i = 0; i < CA->getNumOperands(); i++) {
-    auto C = CA->getOperand(i);
-    printConstant(C);
-    Names += DefNames.get(C) + ", ";
-  }
-  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
-  std::string Suffix = NeedCast ? "})" : "}";
-  if (StringRef(Names).endswith(", "))
-    Names = StringRef(Names).drop_back(2).str();
-  return Prefix + Names + Suffix;
-}
-
-#else
-
-std::string CxxApiWriterPass::getConstList(const ConstantAggregate *CA,
-                                           bool NeedCast) {
-  std::string Names;
-  for (unsigned i = 0; i < CA->getNumOperands(); i++) {
-    auto C = CA->getOperand(i);
-    printConstant(C);
-    Names += DefNames.get(C) + ", ";
-  }
-  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
-  std::string Suffix = NeedCast ? "})" : "}";
-  if (StringRef(Names).endswith(", "))
-    Names = StringRef(Names).drop_back(2).str();
-  return Prefix + Names + Suffix;
-}
-
-#endif
-
-std::string CxxApiWriterPass::getConstList(const ConstantDataSequential *CDS,
-                                           bool NeedCast) {
+std::string
+CxxApiWriterPass::getCDSElements(const ConstantDataSequential *CDS) {
   std::string Names;
   for (unsigned i = 0; i < CDS->getNumElements(); i++) {
     auto C = CDS->getElementAsConstant(i);
     printConstant(C);
     Names += DefNames.get(C) + ", ";
   }
-  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
-  std::string Suffix = NeedCast ? "})" : "}";
   if (StringRef(Names).endswith(", "))
     Names = StringRef(Names).drop_back(2).str();
-  return Prefix + Names + Suffix;
+  return "{" + Names + "}";
 }
 
 std::string
-CxxApiWriterPass::getConstIntList(const ConstantDataSequential *CDS) {
+CxxApiWriterPass::getCDSElementsAsInt(const ConstantDataSequential *CDS) {
   std::string Names;
   for (unsigned i = 0; i < CDS->getNumElements(); i++) {
     printConstant(CDS->getElementAsConstant(i));
@@ -880,8 +816,10 @@ static const std::map<Attribute::AttrKind, std::string> Attrs = {
   {Attribute::StackProtectReq, "StackProtectReq"},
   {Attribute::StackProtectStrong, "StackProtectStrong"},
   {Attribute::StructRet, "StructRet"},
+#if !LLVM_VERSION_BEFORE(3, 9, 0)
   {Attribute::SwiftError, "SwiftError"},
   {Attribute::SwiftSelf, "SwiftSelf"},
+#endif
   {Attribute::UWTable, "UWTable"},
   {Attribute::ZExt, "ZExt"},
 #if !LLVM_VERSION_BEFORE(3, 9, 1)
@@ -1210,18 +1148,15 @@ void CxxApiWriterPass::printTypes(const Module *M) {
 void CxxApiWriterPass::printConstant(const Constant *C) {
   if (isa<ConstantInt>(C) || isa<BlockAddress>(C) ||
       isa<ConstantPointerNull>(C) || isa<UndefValue>(C) ||
-      isa<ConstantTokenNone>(C)) {
+      isa<ConstantTokenNone>(C) || isa<ConstantAggregateZero>(C)) {
     ConstSet Cs;
     initCommonConst(C, Cs);
   }
 
-  if (DefNames.has(C))
-    return;
-
   // First, if the constant is actually a GlobalValue (variable or
   // function) or its already in the constant list then we've printed it
   // already and we can just return.
-  if (isa<GlobalValue>(C))
+  if (DefNames.has(C) || isa<GlobalValue>(C))
     return;
 
   // Create val name
@@ -1238,6 +1173,11 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
     OpNames.push_back(DefNames.get(OpN));
   }
 
+  if (isPrintIR) {
+    nl();
+    nl() << "/*  " << *C << "  */";
+  }
+
   //
   // ConstantInt (BitWidth > 64)
   if (auto CI = dyn_cast<ConstantInt>(C)) {
@@ -1248,12 +1188,6 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
     OS.flush();
     nl() << "auto " << ValName << " = ConstantInt::get(IRB.getIntNTy(" << BwStr
          << "), APInt(" << BwStr << ", \"" << ValStr << "\", 10));";
-  }
-  //
-  // ConstantAggregateZero
-  else if (isa<ConstantAggregateZero>(C)) {
-    nl() << "auto " << ValName << " = ConstantAggregateZero::get(" << TypeName
-         << ");";
   }
   //
   // ConstantFP
@@ -1281,7 +1215,7 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
     //
     // integer array
     else if (EleTy->isIntegerTy() && EleBitWidth <= 64) {
-      auto Elts = getConstIntList(CDS);
+      auto Elts = getCDSElementsAsInt(CDS);
       auto Method = isArrayTy ? " = ConstantDataArray::get(Ctx, "
                               : " = ConstantDataVector::get(Ctx, ";
       nl() << "auto " << ValName << Method << Elts << ");";
@@ -1289,7 +1223,7 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
     //
     // etc...
     else {
-      auto Elts = getConstList(CDS);
+      auto Elts = getCDSElements(CDS);
       auto Method =
           isArrayTy ? " = ConstantArray::get(" : " = ConstantVector::get(";
       nl() << "auto " << ValName << Method << TypeName << ", " << Elts << ");";
@@ -1297,15 +1231,15 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
   }
 #if LLVM_VERSION_BEFORE(3, 9, 1)
   else if (auto CA = dyn_cast<ConstantArray>(C)) {
-    auto Elts = getConstList(CA);
+    auto Elts = getAggregateElements(CA);
     nl() << "auto " << ValName << " = ConstantArray::get(" << TypeName << ", "
          << Elts << ");";
   } else if (auto CS = dyn_cast<ConstantStruct>(C)) {
-    auto Elts = getConstList(CS);
+    auto Elts = getAggregateElements(CS);
     nl() << "auto " << ValName << " = ConstantStruct::get(" << TypeName << ", "
          << Elts << ");";
   } else if (auto CV = dyn_cast<ConstantVector>(C)) {
-    auto Elts = getConstList(CV);
+    auto Elts = getAggregateElements(CV);
     nl() << "auto " << ValName << " = ConstantVector::get(" << TypeName << ", "
          << Elts << ");";
   }
@@ -1313,7 +1247,7 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
   //
   // ConstantAggregate
   else if (auto CA = dyn_cast<ConstantAggregate>(C)) {
-    auto Elts = getConstList(CA);
+    auto Elts = getAggregateElements(CA);
     nl() << "auto " << ValName << " = ";
     if (isa<ConstantArray>(C)) {
       cl() << "ConstantArray::get(";
@@ -1333,7 +1267,7 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
     // GetElementPtrExpr
     if (CE->getOpcode() == Instruction::GetElementPtr) {
       auto GEP = cast<GEPOperator>(CE);
-      auto Indices = getConstList(GEP, true);
+      auto Indices = getGEPExprOperands(GEP);
       auto Method =
           GEP->isInBounds() ? "getInBoundsGetElementPtr" : "getGetElementPtr";
       nl() << "auto " << ValName << " = ConstantExpr::" << Method
@@ -1415,6 +1349,10 @@ void CxxApiWriterPass::initCommonConst(const Constant *C, ConstSet &Cs) {
     DefNames.set(C, "ConstantTokenNone::get(Ctx)");
     return;
   }
+  if (isa<ConstantAggregateZero>(C)) {
+    DefNames.set(C, "ConstantAggregateZero::get(" + TyName + ")");
+    return;
+  }
 
   if (auto CI = dyn_cast<ConstantInt>(C)) {
     auto Val = CI->getValue().toString(10, true);
@@ -1427,9 +1365,10 @@ void CxxApiWriterPass::initCommonConst(const Constant *C, ConstSet &Cs) {
       DefNames.set(C, "IRB.getIntN(" + BWS + ", " + Val + ")");
       return;
     }
-    case 1:
-      DefNames.set(C, "IRB.getInt1(" + btostr(!CI->isNullValue()).str() + ")");
+    case 1: {
+      DefNames.set(C, CI->isNullValue() ? "IRB.getFalse()" : "IRB.getTrue()");
       return;
+    }
     case 8:
     case 16:
     case 32:
@@ -1491,7 +1430,7 @@ void CxxApiWriterPass::printVariableHead(const GlobalVariable *GV) {
   }
   auto Name = DefNames.get(GV);
   auto EleTyName = DefNames.get(GV->getType()->getElementType());
-  if (GV->hasInitializer()) {
+  if (!isPrintIR && GV->hasInitializer()) {
     nl() << "// has initializer, specified below";
   }
   nl() << "auto " << Name << " = new GlobalVariable(*M, " << EleTyName << ", "
@@ -1524,12 +1463,15 @@ void CxxApiWriterPass::printVariableHead(const GlobalVariable *GV) {
       cl() << Literally(GV->getComdat()->getName()) << ")));";
     }
   }
+#if !LLVM_VERSION_BEFORE(6, 0, 1)
+  if (GV->isDSOLocal()) {
+    nl() << Name << "->setDSOLocal(true);";
+  }
+#endif
 #if !LLVM_VERSION_BEFORE(3, 9, 1)
-  if (GV->getUnnamedAddr() != GlobalValue::UnnamedAddr::None) {
-    nl() << Name << "->setUnnamedAddr(GlobalValue::UnnamedAddr::"
-         << (GV->getUnnamedAddr() == GlobalValue::UnnamedAddr::Local
-                 ? "Local);"
-                 : "Global);");
+  if (GV->hasAtLeastLocalUnnamedAddr()) {
+    auto UA = GV->hasGlobalUnnamedAddr() ? "Global);" : "Local);";
+    nl() << Name << "->setUnnamedAddr(GlobalValue::UnnamedAddr::" << UA;
   }
 #endif
   nl();
@@ -2001,7 +1943,6 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     nl();
     return;
   }
-#if !LLVM_VERSION_BEFORE(3, 8, 0)
   case Instruction::AddrSpaceCast: {
     nl() << "auto " << ValName << "IRB.CreateAddrSpaceCast(" << OpNames[0]
          << ", " << ValTyName << lastNameArg(I);
@@ -2045,7 +1986,6 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     nl();
     return;
   }
-#endif
   default:
     report_fatal_error("unknow instruction!");
   }
@@ -2072,7 +2012,9 @@ void CxxApiWriterPass::printFunctionHead(const Function *F) {
 
 void CxxApiWriterPass::printFunctionAttr(const Function *F) {
   auto Name = DefNames.get(F);
-  nl() << Name << "->setCallingConv(" << getCallingConv(F) << ");";
+  if (F->getCallingConv()) {
+    nl() << Name << "->setCallingConv(" << getCallingConv(F) << ");";
+  }
   if (F->hasSection()) {
     nl() << Name << "->setSection(" << Literally(F->getSection()) << ");";
   }
@@ -2097,12 +2039,15 @@ void CxxApiWriterPass::printFunctionAttr(const Function *F) {
       cl() << "" << Literally(F->getComdat()->getName()) << ")));";
     }
   }
+#if !LLVM_VERSION_BEFORE(6, 0, 1)
+  if (F->isDSOLocal()) {
+    nl() << Name << "->setDSOLocal(true);";
+  }
+#endif
 #if !LLVM_VERSION_BEFORE(3, 9, 1)
-  if (F->getUnnamedAddr() != GlobalValue::UnnamedAddr::None) {
-    nl() << Name << "->setUnnamedAddr(GlobalValue::UnnamedAddr::"
-         << (F->getUnnamedAddr() == GlobalValue::UnnamedAddr::Local
-                 ? "Local);"
-                 : "Global);");
+  if (F->hasAtLeastLocalUnnamedAddr()) {
+    auto UA = F->hasGlobalUnnamedAddr() ? "Global);" : "Local);";
+    nl() << Name << "->setUnnamedAddr(GlobalValue::UnnamedAddr::" << UA;
   }
 #endif
   if (F->hasPersonalityFn()) {
@@ -2253,10 +2198,13 @@ bool CxxApiWriterPass::runOnModule(Module &M) {
   TheModule = &M;
 
   nl();
+  nl() << "#include <llvm/ADT/STLExtras.h>";
   nl() << "#include <llvm/IR/IRBuilder.h>";
   nl() << "#include <llvm/IR/InlineAsm.h>";
+  nl() << "#include <llvm/IR/Module.h>";
   nl() << "#include <llvm/IR/TypeBuilder.h>";
   nl() << "#include <llvm/IR/Verifier.h>";
+  nl() << "#include <llvm/Support/raw_ostream.h>";
   nl();
   nl() << "#if (LLVM_VERSION_MAJOR != " << LLVM_VERSION_MAJOR
        << " || (LLVM_VERSION_MINOR != " << LLVM_VERSION_MINOR << "))";
