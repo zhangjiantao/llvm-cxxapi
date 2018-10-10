@@ -1,5 +1,3 @@
-#include <utility>
-
 //===--- CxxApiWriterPass.cpp - Converting LLVM IR to C++ API ----*- C++-*-===//
 //
 //                     The LLVM Compiler Infrastructure
