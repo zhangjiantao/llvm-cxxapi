@@ -146,10 +146,10 @@ class NameBuilder {
   template <typename T> std::string getUnique(T *Obj, const char *Suffix = "") {
     unsigned i = 0;
     auto Prefix = getPrefix(Obj) + Suffix;
-    std::string Name;
-    do {
+    auto Name = Prefix;
+    while (UsedNames.find(Name) != UsedNames.end()) {
       Name = Prefix + utohexstr(++i, true);
-    } while (UsedNames.find(Name) != UsedNames.end());
+    }
     UsedNames.insert(Name);
     return Name;
   }
