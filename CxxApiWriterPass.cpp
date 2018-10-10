@@ -339,6 +339,7 @@ static StringRef getAtomicOrdering(AtomicOrdering Ordering) {
   case AtomicOrdering::SequentiallyConsistent:
     return "AtomicOrdering::SequentiallyConsistent";
   }
+  report_fatal_error("unknow AtomicOrdering");
 }
 
 template <typename T>
@@ -350,7 +351,7 @@ static StringRef getAtomicSynchScope(const T *Obj) {
   case CrossThread:
     return "CrossThread";
   }
-  return "<unknow>";
+  report_fatal_error("unknow AtomicSynchScope");
 }
 #else
 static StringRef getAtomicSynchScope(const T *Obj) {
@@ -360,6 +361,7 @@ static StringRef getAtomicSynchScope(const T *Obj) {
   case SyncScope::System:
     return "SyncScope::System";
   }
+  report_fatal_error("unknow AtomicSynchScope");
 }
 #endif
 
@@ -408,7 +410,7 @@ static StringRef getLinkageType(const GlobalValue *G) {
   case GlobalValue::CommonLinkage:
     return "GlobalValue::CommonLinkage";
   }
-  return "<unknow>";
+  report_fatal_error("unknow LinageType");
 }
 
 static StringRef getVisibilityType(const GlobalValue *G) {
@@ -420,7 +422,7 @@ static StringRef getVisibilityType(const GlobalValue *G) {
   case GlobalValue::ProtectedVisibility:
     return "GlobalValue::ProtectedVisibility";
   }
-  return "<unknow>";
+  report_fatal_error("unknow Visibility");
 }
 
 static StringRef getDLLStorageClassType(const GlobalValue *G) {
@@ -432,7 +434,7 @@ static StringRef getDLLStorageClassType(const GlobalValue *G) {
   case GlobalValue::DLLExportStorageClass:
     return "GlobalValue::DLLExportStorageClass";
   }
-  return "<unknow>";
+  report_fatal_error("unknow DLLStorageClass");
 }
 
 static StringRef getThreadLocalMode(const GlobalValue *G) {
@@ -448,7 +450,7 @@ static StringRef getThreadLocalMode(const GlobalValue *G) {
   case GlobalVariable::LocalExecTLSModel:
     return "GlobalVariable::LocalExecTLSModel";
   }
-  return "<unknow>";
+  report_fatal_error("unknow ThreadLocalMode");
 }
 
 static std::string Normalize(const std::string &Str) {
@@ -1187,6 +1189,11 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
   //
   // ConstantDataSequential
   else if (auto CDS = dyn_cast<ConstantDataSequential>(C)) {
+    auto EleTy = CDS->getElementType();
+    auto EleBitWidth = EleTy->getIntegerBitWidth();
+    auto isArrayTy = isa<ArrayType>(CDS->getType());
+    //
+    // literal string
     if (CDS->isString() && !CDS->getAsString().drop_back().count('\0')) {
       nl() << "auto " << ValName << " = ConstantDataArray::getString(Ctx, ";
       auto Str = CDS->getAsString();
@@ -1194,19 +1201,22 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
       if (NulTerm)
         Str = Str.drop_back();
       cl() << Literally(Str) << ", " << btostr(NulTerm) << ");";
-    } else if (CDS->getElementType()->isIntegerTy() &&
-               (CDS->getElementType()->getIntegerBitWidth() == 8 ||
-                CDS->getElementType()->getIntegerBitWidth() == 16 ||
-                CDS->getElementType()->getIntegerBitWidth() == 32 ||
-                CDS->getElementType()->getIntegerBitWidth() == 64)) {
+    }
+    //
+    // integer array
+    else if (EleTy->isIntegerTy() && EleBitWidth <= 64) {
       auto Elts = getConstIntList(CDS);
-      nl() << "auto " << ValName << " = ConstantDataArray::get(Ctx, " << Elts
-           << ");";
-    } else {
+      auto Method = isArrayTy ? " = ConstantDataArray::get(Ctx, "
+                              : " = ConstantDataVector::get(Ctx, ";
+      nl() << "auto " << ValName << Method << Elts << ");";
+    }
+    //
+    // etc...
+    else {
       auto Elts = getConstList(CDS);
-      auto Decl = isa<ArrayType>(CDS->getType()) ? " = ConstantArray::get("
-                                                 : " = ConstantVector::get(";
-      nl() << "auto " << ValName << Decl << TypeName << ", " << Elts << ");";
+      auto Method =
+          isArrayTy ? " = ConstantArray::get(" : " = ConstantVector::get(";
+      nl() << "auto " << ValName << Method << TypeName << ", " << Elts << ");";
     }
   }
   //
@@ -1254,27 +1264,27 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
     }
     // ConstantExpr cmp, etc
     else {
-      nl() << "auto " << ValName << " = ConstantExpr::";
+      nl() << "auto " << ValName << " = ConstantExpr::get";
       switch (CE->getOpcode()) {
       case Instruction::ICmp:
-        cl() << "getICmp(ICmpInst::ICMP_"
+        cl() << "ICmp(ICmpInst::ICMP_"
              << getICmpPred((ICmpInst::Predicate)CE->getPredicate());
         break;
       case Instruction::FCmp:
-        cl() << "getFCmp(FCmpInst::FCMP_"
+        cl() << "FCmp(FCmpInst::FCMP_"
              << getFCmpPred((FCmpInst::Predicate)CE->getPredicate());
         break;
       case Instruction::Select:
-        cl() << "getSelect(";
+        cl() << "Select(";
         break;
       case Instruction::ExtractElement:
-        cl() << "getExtractElement(";
+        cl() << "ExtractElement(";
         break;
       case Instruction::InsertElement:
-        cl() << "getInsertElement(";
+        cl() << "InsertElement(";
         break;
       case Instruction::ShuffleVector:
-        cl() << "getShuffleVector(";
+        cl() << "ShuffleVector(";
         break;
       default:
         report_fatal_error("invalid constant bin expression");
@@ -1294,7 +1304,6 @@ void CxxApiWriterPass::initCommonConst(const Constant *C, ConstSet &Cs) {
     return;
   Cs.insert(C);
 
-  /// FIXME: BlockAddress expr outside of funciton?
   if (auto BA = dyn_cast<BlockAddress>(C)) {
     DefNames.set(C, "BlockAddress::get(" + DefNames.get(BA->getBasicBlock()) +
                         ")");
@@ -2147,6 +2156,7 @@ bool CxxApiWriterPass::runOnModule(Module &M) {
   cl() << "//";
   nl() << "// This file is generated by llvm-cxxapi (based on LLVM "
        << LLVM_VERSION_STRING << ")";
+  nl() << "// located at https://github.com/zhangjiantao/llvm-cxxapi";
   nl() << "//";
   nl() << "// Generate Command:";
   nl() << "//";
