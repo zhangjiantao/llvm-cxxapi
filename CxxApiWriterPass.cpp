@@ -34,7 +34,6 @@
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Pass.h"
-#include "llvm/Support/AtomicOrdering.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
@@ -55,12 +54,18 @@
 #include <system_error>
 #include <vector>
 
-#define LLVM_VERSION_BEFORE(_MAJOR, _MINOR)                                    \
+#define LLVM_VERSION_BEFORE(_MAJOR, _MINOR, _PATCH)                            \
   (LLVM_VERSION_MAJOR < _MAJOR ||                                              \
-   (LLVM_VERSION_MAJOR == _MAJOR && (LLVM_VERSION_MINOR < _MINOR)))
+   (LLVM_VERSION_MAJOR == _MAJOR &&                                            \
+    (LLVM_VERSION_MINOR < _MINOR ||                                            \
+     (LLVM_VERSION_MINOR == _MINOR && LLVM_VERSION_PATCH < _PATCH))))
 
-#if LLVM_VERSION_BEFORE(3, 7)
-#error LLVM earlier than 3.7 is no longer supported.
+#if !LLVM_VERSION_BEFORE(3, 9, 1)
+#include "llvm/Support/AtomicOrdering.h"
+#endif
+
+#if LLVM_VERSION_BEFORE(3, 7, 1)
+#error LLVM earlier than 3.7.1 is no longer supported.
 #endif
 
 using namespace llvm;
@@ -186,7 +191,7 @@ struct CxxApiWriterPass : public ModulePass {
 
   bool runOnModule(Module &M) override;
 
-#if LLVM_VERSION_BEFORE(4, 0)
+#if LLVM_VERSION_BEFORE(4, 0, 0)
   const char *getPassName() const override { return "llvm-cxxapi writer"; }
 #else
   StringRef getPassName() const override { return "llvm-cxxapi writer"; }
@@ -227,11 +232,19 @@ private:
   void printConstantFP(const ConstantFP *);
 
   std::string getGEPInstOperands(const GetElementPtrInst *);
-  std::string getArgOperands(const iterator_range<User::const_op_iterator> &);
+  std::string getArgOperands(const iterator_range<User::const_op_iterator> &,
+                             bool = false);
   std::string getTypeList(const std::vector<Type *> &, bool = false);
   std::string getConstList(const ConstantDataSequential *, bool = false);
   std::string getConstIntList(const ConstantDataSequential *);
+
+#if LLVM_VERSION_BEFORE(3, 9, 1)
+  std::string getConstList(const ConstantArray *, bool = false);
+  std::string getConstList(const ConstantStruct *, bool = false);
+  std::string getConstList(const ConstantVector *, bool = false);
+#else
   std::string getConstList(const ConstantAggregate *, bool = false);
+#endif
   std::string getConstList(const GEPOperator *, bool = false);
 
   std::string getOperandName(const Value *, ValueMap &);
@@ -337,7 +350,7 @@ static StringRef getAtomicOrdering(AtomicOrdering Ordering) {
 }
 
 template <typename T>
-#if LLVM_VERSION_BEFORE(5, 0)
+#if LLVM_VERSION_BEFORE(5, 0, 0)
 static StringRef getAtomicSynchScope(const T *Obj) {
   switch (Obj->getSynchScope()) {
   case SingleThread:
@@ -515,7 +528,7 @@ void CxxApiWriterPass::printConstantFP(const ConstantFP *CFP) {
   auto APF = APFloat(CFP->getValueAPF());
   if (CFP->getType()->isFloatTy()) {
     bool ignored;
-#if LLVM_VERSION_BEFORE(4, 0)
+#if LLVM_VERSION_BEFORE(4, 0, 0)
     APF.convert(APFloat::IEEEdouble, APFloat::rmNearestTiesToEven, &ignored);
 #else
     APF.convert(APFloat::IEEEdouble(), APFloat::rmNearestTiesToEven, &ignored);
@@ -526,13 +539,13 @@ void CxxApiWriterPass::printConstantFP(const ConstantFP *CFP) {
   std::string StrVal;
   raw_string_ostream OS(StrVal);
 /// FIXME: TEST
-#if LLVM_VERSION_BEFORE(4, 0)
+#if LLVM_VERSION_BEFORE(4, 0, 0)
   if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEdouble) {
 #else
   if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEdouble()) {
 #endif
     OS << CFP->getValueAPF().convertToDouble();
-#if LLVM_VERSION_BEFORE(4, 0)
+#if LLVM_VERSION_BEFORE(4, 0, 0)
   } else if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEsingle) {
 #else
   } else if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEsingle()) {
@@ -683,14 +696,16 @@ std::string CxxApiWriterPass::getGEPInstOperands(const GetElementPtrInst *GEP) {
 }
 
 std::string CxxApiWriterPass::getArgOperands(
-    const iterator_range<User::const_op_iterator> &Operands) {
+    const iterator_range<User::const_op_iterator> &Operands, bool NeedCast) {
   std::string Names;
   for (auto &Arg : Operands) {
     Names += DefNames.get(Arg) + ", ";
   }
+  std::string Prefix = NeedCast ? "ArrayRef<Value *>({" : "{";
+  std::string Suffix = NeedCast ? "})" : "}";
   if (StringRef(Names).endswith(", "))
     Names = StringRef(Names).drop_back(2).str();
-  return "{" + Names + "}";
+  return Prefix + Names + Suffix;
 }
 
 std::string CxxApiWriterPass::getConstList(const GEPOperator *GEP,
@@ -708,6 +723,55 @@ std::string CxxApiWriterPass::getConstList(const GEPOperator *GEP,
   return Prefix + Names + Suffix;
 }
 
+#if LLVM_VERSION_BEFORE(3, 9, 1)
+
+std::string CxxApiWriterPass::getConstList(const ConstantArray *CA,
+                                           bool NeedCast) {
+  std::string Names;
+  for (unsigned i = 0; i < CA->getNumOperands(); i++) {
+    auto C = CA->getOperand(i);
+    printConstant(C);
+    Names += DefNames.get(C) + ", ";
+  }
+  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
+  std::string Suffix = NeedCast ? "})" : "}";
+  if (StringRef(Names).endswith(", "))
+    Names = StringRef(Names).drop_back(2).str();
+  return Prefix + Names + Suffix;
+}
+
+std::string CxxApiWriterPass::getConstList(const ConstantStruct *CA,
+                                           bool NeedCast) {
+  std::string Names;
+  for (unsigned i = 0; i < CA->getNumOperands(); i++) {
+    auto C = CA->getOperand(i);
+    printConstant(C);
+    Names += DefNames.get(C) + ", ";
+  }
+  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
+  std::string Suffix = NeedCast ? "})" : "}";
+  if (StringRef(Names).endswith(", "))
+    Names = StringRef(Names).drop_back(2).str();
+  return Prefix + Names + Suffix;
+}
+
+std::string CxxApiWriterPass::getConstList(const ConstantVector *CA,
+                                           bool NeedCast) {
+  std::string Names;
+  for (unsigned i = 0; i < CA->getNumOperands(); i++) {
+    auto C = CA->getOperand(i);
+    printConstant(C);
+    Names += DefNames.get(C) + ", ";
+  }
+  std::string Prefix = NeedCast ? "ArrayRef<Constant *>({" : "{";
+  std::string Suffix = NeedCast ? "})" : "}";
+  if (StringRef(Names).endswith(", "))
+    Names = StringRef(Names).drop_back(2).str();
+  return Prefix + Names + Suffix;
+}
+
+#else
+
 std::string CxxApiWriterPass::getConstList(const ConstantAggregate *CA,
                                            bool NeedCast) {
   std::string Names;
@@ -722,6 +786,8 @@ std::string CxxApiWriterPass::getConstList(const ConstantAggregate *CA,
     Names = StringRef(Names).drop_back(2).str();
   return Prefix + Names + Suffix;
 }
+
+#endif
 
 std::string CxxApiWriterPass::getConstList(const ConstantDataSequential *CDS,
                                            bool NeedCast) {
@@ -766,66 +832,73 @@ std::string CxxApiWriterPass::getTypeList(const std::vector<Type *> &TyList,
 }
 
 static const std::map<Attribute::AttrKind, std::string> Attrs = {
-    /// FIXME: not completely implemented
-    //{Attribute::Alignment, "Alignment"},
-    //{Attribute::AllocSize, "AllocSize"},
-    {Attribute::AlwaysInline, "AlwaysInline"},
-    {Attribute::ArgMemOnly, "ArgMemOnly"},
-    {Attribute::Builtin, "Builtin"},
-    {Attribute::ByVal, "ByVal"},
-    {Attribute::Cold, "Cold"},
-    {Attribute::Convergent, "Convergent"},
-    //{Attribute::Dereferenceable, "Dereferenceable"},
-    //{Attribute::DereferenceableOrNull, "DereferenceableOrNull"},
-    {Attribute::InAlloca, "InAlloca"},
-    {Attribute::InReg, "InReg"},
-    {Attribute::InaccessibleMemOnly, "InaccessibleMemOnly"},
-    {Attribute::InaccessibleMemOrArgMemOnly, "InaccessibleMemOrArgMemOnly"},
-    {Attribute::InlineHint, "InlineHint"},
-    {Attribute::JumpTable, "JumpTable"},
-    {Attribute::MinSize, "MinSize"},
-    {Attribute::Naked, "Naked"},
-    {Attribute::Nest, "Nest"},
-    {Attribute::NoAlias, "NoAlias"},
-    {Attribute::NoBuiltin, "NoBuiltin"},
-    {Attribute::NoCapture, "NoCapture"},
-    {Attribute::NoDuplicate, "NoDuplicate"},
-    {Attribute::NoImplicitFloat, "NoImplicitFloat"},
-    {Attribute::NoInline, "NoInline"},
-    {Attribute::NoRecurse, "NoRecurse"},
-    {Attribute::NoRedZone, "NoRedZone"},
-    {Attribute::NoReturn, "NoReturn"},
-    {Attribute::NoUnwind, "NoUnwind"},
-    {Attribute::NonLazyBind, "NonLazyBind"},
-    {Attribute::NonNull, "NonNull"},
-    {Attribute::OptimizeForSize, "OptimizeForSize"},
-    {Attribute::OptimizeNone, "OptimizeNone"},
-    {Attribute::ReadNone, "ReadNone"},
-    {Attribute::ReadOnly, "ReadOnly"},
-    {Attribute::Returned, "Returned"},
-    {Attribute::ReturnsTwice, "ReturnsTwice"},
-    {Attribute::SExt, "SExt"},
-    {Attribute::SafeStack, "SafeStack"},
-    {Attribute::SanitizeAddress, "SanitizeAddress"},
-    {Attribute::SanitizeMemory, "SanitizeMemory"},
-    {Attribute::SanitizeThread, "SanitizeThread"},
-    {Attribute::StackAlignment, "StackAlignment"},
-    {Attribute::StackProtect, "StackProtect"},
-    {Attribute::StackProtectReq, "StackProtectReq"},
-    {Attribute::StackProtectStrong, "StackProtectStrong"},
-    {Attribute::StructRet, "StructRet"},
-    {Attribute::SwiftError, "SwiftError"},
-    {Attribute::SwiftSelf, "SwiftSelf"},
-    {Attribute::UWTable, "UWTable"},
-    {Attribute::WriteOnly, "WriteOnly"},
-    {Attribute::ZExt, "ZExt"},
+  /// FIXME: not completely implemented
+  //{Attribute::Alignment, "Alignment"},
+  //{Attribute::AllocSize, "AllocSize"},
+  {Attribute::AlwaysInline, "AlwaysInline"},
+  {Attribute::ArgMemOnly, "ArgMemOnly"},
+  {Attribute::Builtin, "Builtin"},
+  {Attribute::ByVal, "ByVal"},
+  {Attribute::Cold, "Cold"},
+  {Attribute::Convergent, "Convergent"},
+  //{Attribute::Dereferenceable, "Dereferenceable"},
+  //{Attribute::DereferenceableOrNull, "DereferenceableOrNull"},
+  {Attribute::InAlloca, "InAlloca"},
+  {Attribute::InReg, "InReg"},
+  {Attribute::InaccessibleMemOnly, "InaccessibleMemOnly"},
+  {Attribute::InaccessibleMemOrArgMemOnly, "InaccessibleMemOrArgMemOnly"},
+  {Attribute::InlineHint, "InlineHint"},
+  {Attribute::JumpTable, "JumpTable"},
+  {Attribute::MinSize, "MinSize"},
+  {Attribute::Naked, "Naked"},
+  {Attribute::Nest, "Nest"},
+  {Attribute::NoAlias, "NoAlias"},
+  {Attribute::NoBuiltin, "NoBuiltin"},
+  {Attribute::NoCapture, "NoCapture"},
+  {Attribute::NoDuplicate, "NoDuplicate"},
+  {Attribute::NoImplicitFloat, "NoImplicitFloat"},
+  {Attribute::NoInline, "NoInline"},
+  {Attribute::NoRecurse, "NoRecurse"},
+  {Attribute::NoRedZone, "NoRedZone"},
+  {Attribute::NoReturn, "NoReturn"},
+  {Attribute::NoUnwind, "NoUnwind"},
+  {Attribute::NonLazyBind, "NonLazyBind"},
+  {Attribute::NonNull, "NonNull"},
+  {Attribute::OptimizeForSize, "OptimizeForSize"},
+  {Attribute::OptimizeNone, "OptimizeNone"},
+  {Attribute::ReadNone, "ReadNone"},
+  {Attribute::ReadOnly, "ReadOnly"},
+  {Attribute::Returned, "Returned"},
+  {Attribute::ReturnsTwice, "ReturnsTwice"},
+  {Attribute::SExt, "SExt"},
+  {Attribute::SafeStack, "SafeStack"},
+  {Attribute::SanitizeAddress, "SanitizeAddress"},
+  {Attribute::SanitizeMemory, "SanitizeMemory"},
+  {Attribute::SanitizeThread, "SanitizeThread"},
+  {Attribute::StackAlignment, "StackAlignment"},
+  {Attribute::StackProtect, "StackProtect"},
+  {Attribute::StackProtectReq, "StackProtectReq"},
+  {Attribute::StackProtectStrong, "StackProtectStrong"},
+  {Attribute::StructRet, "StructRet"},
+  {Attribute::SwiftError, "SwiftError"},
+  {Attribute::SwiftSelf, "SwiftSelf"},
+  {Attribute::UWTable, "UWTable"},
+  {Attribute::ZExt, "ZExt"},
+#if !LLVM_VERSION_BEFORE(3, 9, 1)
+  {Attribute::WriteOnly, "WriteOnly"},
+#endif
 };
 
 bool CxxApiWriterPass::hasAnyArgAttribute(const Function *F) {
   using Pair = std::pair<Attribute::AttrKind, std::string>;
   return std::any_of(F->arg_begin(), F->arg_end(), [&](const Argument &Arg) {
     return std::any_of(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
+#if LLVM_VERSION_BEFORE(3, 9, 1)
+      return Arg.getParent()->getAttributes().hasAttribute(Arg.getArgNo() + 1,
+                                                           Att.first);
+#else
       return Arg.hasAttribute(Att.first);
+#endif
     });
   });
 }
@@ -843,7 +916,7 @@ void CxxApiWriterPass::printAttributes(const Function *F,
 void CxxApiWriterPass::printAttributes(const CallInst *CI,
                                        const std::string &Name) {
   using Pair = std::pair<Attribute::AttrKind, std::string>;
-#if LLVM_VERSION_BEFORE(5, 0)
+#if LLVM_VERSION_BEFORE(5, 0, 0)
   std::for_each(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
     if (CI->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
                                          Att.first)) {
@@ -865,7 +938,7 @@ void CxxApiWriterPass::printAttributes(const CallInst *CI,
 void CxxApiWriterPass::printAttributes(const InvokeInst *Inv,
                                        const std::string &Name) {
   using Pair = std::pair<Attribute::AttrKind, std::string>;
-#if LLVM_VERSION_BEFORE(5, 0)
+#if LLVM_VERSION_BEFORE(5, 0, 0)
   std::for_each(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
     if (Inv->getAttributes().hasAttribute(AttributeSet::ReturnIndex,
                                           Att.first)) {
@@ -888,9 +961,18 @@ void CxxApiWriterPass::printAttributes(const Argument *Arg,
                                        const std::string &Name) {
   using Pair = std::pair<Attribute::AttrKind, std::string>;
   std::for_each(Attrs.begin(), Attrs.end(), [&](const Pair &Att) {
+#if LLVM_VERSION_BEFORE(3, 9, 1)
+    auto AttrIdx = Arg->getArgNo() + 1;
+    auto Attrs = Arg->getParent()->getAttributes();
+    if (Attrs.hasAttribute(AttrIdx, Att.first)) {
+      /// FIXME: not completely implemented
+      nl() << "// " << Name << "->addAttr(Attribute::" << Att.second << ");";
+    }
+#else
     if (Arg->hasAttribute(Att.first)) {
       nl() << Name << "->addAttr(Attribute::" << Att.second << ");";
     }
+#endif
   });
 }
 
@@ -1213,6 +1295,21 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
       nl() << "auto " << ValName << Method << TypeName << ", " << Elts << ");";
     }
   }
+#if LLVM_VERSION_BEFORE(3, 9, 1)
+  else if (auto CA = dyn_cast<ConstantArray>(C)) {
+    auto Elts = getConstList(CA);
+    nl() << "auto " << ValName << " = ConstantArray::get(" << TypeName << ", "
+         << Elts << ");";
+  } else if (auto CS = dyn_cast<ConstantStruct>(C)) {
+    auto Elts = getConstList(CS);
+    nl() << "auto " << ValName << " = ConstantStruct::get(" << TypeName << ", "
+         << Elts << ");";
+  } else if (auto CV = dyn_cast<ConstantVector>(C)) {
+    auto Elts = getConstList(CV);
+    nl() << "auto " << ValName << " = ConstantVector::get(" << TypeName << ", "
+         << Elts << ");";
+  }
+#else
   //
   // ConstantAggregate
   else if (auto CA = dyn_cast<ConstantAggregate>(C)) {
@@ -1229,6 +1326,7 @@ void CxxApiWriterPass::printConstant(const Constant *C) {
     }
     cl() << TypeName << ", " << Elts << ");";
   }
+#endif
   //
   // ConstantExpr
   else if (auto CE = dyn_cast<ConstantExpr>(C)) {
@@ -1426,12 +1524,14 @@ void CxxApiWriterPass::printVariableHead(const GlobalVariable *GV) {
       cl() << Literally(GV->getComdat()->getName()) << ")));";
     }
   }
+#if !LLVM_VERSION_BEFORE(3, 9, 1)
   if (GV->getUnnamedAddr() != GlobalValue::UnnamedAddr::None) {
     nl() << Name << "->setUnnamedAddr(GlobalValue::UnnamedAddr::"
          << (GV->getUnnamedAddr() == GlobalValue::UnnamedAddr::Local
                  ? "Local);"
                  : "Global);");
   }
+#endif
   nl();
 }
 
@@ -1620,7 +1720,7 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     nl() << "auto " << ValName << " = IRB.CreateSwitch(" << OpNames[0] << ", "
          << OpNames[1] << ", " << SI->getNumCases() << ");";
     for (auto It = SI->case_begin(); It != SI->case_end(); ++It) {
-#if LLVM_VERSION_BEFORE(5, 0)
+#if LLVM_VERSION_BEFORE(5, 0, 0)
       auto Case = &It;
 #else
       auto Case = It;
@@ -1649,11 +1749,16 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
   }
   case Instruction::Invoke: {
     auto Inv = cast<InvokeInst>(I);
+#if LLVM_VERSION_BEFORE(3, 9, 1)
+    auto Args = getArgOperands(Inv->arg_operands(), true);
+#else
+    auto Args = getArgOperands(Inv->arg_operands());
+#endif
     nl() << "auto " << ValName << " = IRB.CreateInvoke("
          << getOperandName(Inv->getCalledValue(), Refs) << ", "
          << DefNames.get(Inv->getNormalDest()) << ", "
-         << DefNames.get(Inv->getUnwindDest()) << ", "
-         << getArgOperands(Inv->arg_operands()) << lastNameArg(I);
+         << DefNames.get(Inv->getUnwindDest()) << ", " << Args
+         << lastNameArg(I);
     nl() << ValName << "->setCallingConv(" << getCallingConv(Inv) << ");";
     printAttributes(Inv, ValName);
     nl();
@@ -1896,7 +2001,7 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     nl();
     return;
   }
-#if !LLVM_VERSION_BEFORE(3, 8)
+#if !LLVM_VERSION_BEFORE(3, 8, 0)
   case Instruction::AddrSpaceCast: {
     nl() << "auto " << ValName << "IRB.CreateAddrSpaceCast(" << OpNames[0]
          << ", " << ValTyName << lastNameArg(I);
@@ -1992,12 +2097,14 @@ void CxxApiWriterPass::printFunctionAttr(const Function *F) {
       cl() << "" << Literally(F->getComdat()->getName()) << ")));";
     }
   }
+#if !LLVM_VERSION_BEFORE(3, 9, 1)
   if (F->getUnnamedAddr() != GlobalValue::UnnamedAddr::None) {
     nl() << Name << "->setUnnamedAddr(GlobalValue::UnnamedAddr::"
          << (F->getUnnamedAddr() == GlobalValue::UnnamedAddr::Local
                  ? "Local);"
                  : "Global);");
   }
+#endif
   if (F->hasPersonalityFn()) {
     nl() << Name << "->setPersonalityFn(" << DefNames.get(F->getPersonalityFn())
          << ");";
