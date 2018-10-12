@@ -95,7 +95,7 @@ Compile Generated C++ Code and Run
 
 $ clang++ `llvm-config --cxxflags` -o test.ll.o -c test.ll.cpp
 
-$ clang++ `llvm-config --ldflags` -o testcxx test.ll.o `llvm-config --libs core support`
+$ clang++ `llvm-config --ldflags` -o testcxx test.ll.o `llvm-config --system-libs --libs core support`
 
 $ ./testcxx
 ```
