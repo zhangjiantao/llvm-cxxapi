@@ -16,7 +16,11 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
+#if defined(LLVM_CXXAPI_IN_SOURCE_BUILD)
 #include "llvm/Config/config.h"
+#else
+#include "llvm/Config/llvm-config.h"
+#endif
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
