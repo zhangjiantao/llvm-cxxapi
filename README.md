@@ -6,14 +6,14 @@ Resurrected LLVM "Cpp Backend", rebuild as a LLVM tool, re implemented IR genera
 INSTALLATION INSTRUCTIONS
 =========================
 
-The `llvm-cxxapi` tool works with LLVM 3.8 ~ 6.0. You will have to compile these version of LLVM before you try to use `llvm-cxxapi`. This guide will walk you through the compilation and installation of both tools and show usage statements to verify that the `llvm-cxxapi` tool is compiled correctly.
+The `llvm-cxxapi` tool works with LLVM 3.8 ~ 7.0. You will have to compile these version of LLVM before you try to use `llvm-cxxapi`. This guide will walk you through the compilation and installation of both tools and show usage statements to verify that the `llvm-cxxapi` tool is compiled correctly.
 
 It is known to compile on various Linux versions (Redhat, Ubuntu, etc), Mac OS X, and Windows (MSVC, Mingw-w64).
 
 Step 1: Clone LLVM and llvm-cxxapi
 =======================
 
-The `llvm-cxxapi` relies on specific LLVM librarys, and so it is best to use it with a specific revision of the LLVM development tree. Currently, `llvm-cxxapi` works with the LLVM 3.8 ~ 6.0 release versions.
+The `llvm-cxxapi` relies on specific LLVM librarys, and so it is best to use it with a specific revision of the LLVM development tree. Currently, `llvm-cxxapi` works with the LLVM 3.8 ~ 7.0 release versions.
 
 If you have never work with LLVM, the first step is to download LLVM on your machine.
 
