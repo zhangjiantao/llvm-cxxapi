@@ -933,7 +933,7 @@ static bool getIfBuiltinIntType(Type *Ty, std::string &R) {
       R = "int" + utostr(BitWidth) + "_t" + R;
       return true;
     default:
-      R = "types::i<" + utostr(BitWidth) + ">";
+      R = "types::i<" + utostr(BitWidth) + ">" + R;
       return true;
     }
   }
