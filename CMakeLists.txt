@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.4.3)
 
-if(NOT COMMAND add_llvm_loadable_module)
+if(NOT COMMAND add_llvm_library)
   if (DEFINED ENV{LLVM_DIR})
     set(CMAKE_CXX_STANDARD 11)
     find_package(LLVM REQUIRED CONFIG)

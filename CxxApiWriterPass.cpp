@@ -319,8 +319,8 @@ static StringRef getICmpPred(CmpInst::Predicate P) {
 
 static StringRef getRMWBinOp(AtomicRMWInst::BinOp Opcode) {
   const char *RmwOps[] = {
-      "Xchg", "Add", "Sub", "And",  "Nand", "Or",
-      "Xor",  "Max", "Min", "UMax", "UMin",
+      "Xchg", "Add", "Sub",  "And",  "Nand", "Or",   "Xor",
+      "Max",  "Min", "UMax", "UMin", "FAdd", "FSub",
   };
   assert_cnt(RmwOps, AtomicRMWInst::FIRST_BINOP, AtomicRMWInst::BAD_BINOP);
   return RmwOps[Opcode - AtomicRMWInst::FIRST_BINOP];
