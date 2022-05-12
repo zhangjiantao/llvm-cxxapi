@@ -319,8 +319,21 @@ static StringRef getICmpPred(CmpInst::Predicate P) {
 
 static StringRef getRMWBinOp(AtomicRMWInst::BinOp Opcode) {
   const char *RmwOps[] = {
-      "Xchg", "Add", "Sub",  "And",  "Nand", "Or",   "Xor",
-      "Max",  "Min", "UMax", "UMin", "FAdd", "FSub",
+    "Xchg",
+    "Add",
+    "Sub",
+    "And",
+    "Nand",
+    "Or",
+    "Xor",
+    "Max",
+    "Min",
+    "UMax",
+    "UMin",
+#if !LLVM_VERSION_BEFORE(9, 0, 0)
+    "FAdd",
+    "FSub",
+#endif
   };
   assert_cnt(RmwOps, AtomicRMWInst::FIRST_BINOP, AtomicRMWInst::BAD_BINOP);
   return RmwOps[Opcode - AtomicRMWInst::FIRST_BINOP];
@@ -1833,8 +1846,9 @@ void CxxApiWriterPass::printInstruction(const Instruction *I, ValueMap &Refs) {
     } else {
       nl();
     }
-    cl() << "IRB.CreateCall(" << FunName << ", "
-         << getArgOperands(Call->arg_operands()) << lastNameArg(I);
+    cl() << "IRB.CreateCall(" << DefNames.get(Call->getFunctionType()) << ", "
+         << FunName << ", " << getArgOperands(Call->arg_operands())
+         << lastNameArg(I);
     if (Call->getCallingConv()) {
       nl() << ValName << "->setCallingConv(" << getCallingConv(Call) << ");";
     }
